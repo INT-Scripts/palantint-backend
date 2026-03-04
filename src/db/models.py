@@ -1,0 +1,217 @@
+import uuid
+from datetime import datetime
+from typing import List, Optional
+
+from sqlalchemy import Column, DateTime, ForeignKey, String, Text
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
+from sqlmodel import Field, Relationship, SQLModel
+
+
+# ── Auth ────────────────────────────────────────────────────────────────────
+
+class User(SQLModel, table=True):
+    __tablename__ = "users"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    username: str = Field(unique=True, index=True)
+    hashed_password: str
+    is_admin: bool = Field(default=False)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class RecentlyViewed(SQLModel, table=True):
+    __tablename__ = "recently_viewed"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    user_id: uuid.UUID = Field(foreign_key="users.id", index=True)
+    student_id: uuid.UUID = Field(foreign_key="students.id")
+    viewed_at: datetime = Field(default_factory=datetime.utcnow)
+
+    user: "User" = Relationship()
+    student: "Student" = Relationship()
+
+
+# ── Junction Tables ─────────────────────────────────────────────────────────
+
+class StudentClub(SQLModel, table=True):
+    __tablename__ = "student_clubs"
+    student_id: uuid.UUID = Field(foreign_key="students.id", primary_key=True)
+    club_id: uuid.UUID = Field(foreign_key="clubs.id", primary_key=True)
+    role: str = Field(default="Membre")
+    is_mandat: bool = Field(default=False)
+
+    student: "Student" = Relationship(back_populates="clubs")
+    club: "Club" = Relationship(back_populates="members")
+
+
+class StudentAgendaEvent(SQLModel, table=True):
+    __tablename__ = "student_agenda_events"
+    student_id: uuid.UUID = Field(foreign_key="students.id", primary_key=True)
+    event_id: uuid.UUID = Field(foreign_key="agenda_events.id", primary_key=True)
+
+    student: "Student" = Relationship(back_populates="agenda_events")
+    event: "AgendaEvent" = Relationship(back_populates="students")
+
+
+class StudentRelationship(SQLModel, table=True):
+    __tablename__ = "student_relationships"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    student_a_id: uuid.UUID = Field(foreign_key="students.id")
+    student_b_id: uuid.UUID = Field(foreign_key="students.id")
+    relationship_type_id: uuid.UUID = Field(foreign_key="relationship_types.id")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    student_a: "Student" = Relationship(
+        sa_relationship_kwargs={"primaryjoin": "StudentRelationship.student_a_id==Student.id"},
+        back_populates="relationships_as_a"
+    )
+    student_b: "Student" = Relationship(
+        sa_relationship_kwargs={"primaryjoin": "StudentRelationship.student_b_id==Student.id"},
+        back_populates="relationships_as_b"
+    )
+    relationship_type: "RelationshipType" = Relationship(back_populates="relationships")
+
+
+# ── Core Entities ───────────────────────────────────────────────────────────
+
+class Student(SQLModel, table=True):
+    __tablename__ = "students"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+
+    # Unique external identifier from TrombINT
+    trombint_id: str = Field(unique=True, index=True)
+
+    # Identity
+    first_name: str = Field(default="")
+    last_name: str = Field(default="")
+    email: Optional[str] = Field(default=None, index=True)
+    profile_picture_path: Optional[str] = Field(default=None)
+
+    # Academic
+    ecole: Optional[str] = Field(default=None)       # e.g. "Télécom SudParis", "IMT-BS"
+    promo: Optional[str] = Field(default=None)        # e.g. "Ingénieur 1ère année"
+
+    # Housing
+    apartment: Optional[str] = Field(default=None)
+
+    # Timestamps
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(
+        default_factory=datetime.utcnow,
+        sa_column_kwargs={"onupdate": datetime.utcnow}
+    )
+
+    # Relationships
+    social_links: list["SocialLink"] = Relationship(
+        back_populates="student",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"}
+    )
+    clubs: list["StudentClub"] = Relationship(
+        back_populates="student",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"}
+    )
+    media: list["Media"] = Relationship(
+        back_populates="student",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"}
+    )
+    agenda_events: list["StudentAgendaEvent"] = Relationship(
+        back_populates="student",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"}
+    )
+    relationships_as_a: list["StudentRelationship"] = Relationship(
+        back_populates="student_a",
+        sa_relationship_kwargs={
+            "primaryjoin": "Student.id==StudentRelationship.student_a_id",
+            "cascade": "all, delete-orphan"
+        }
+    )
+    relationships_as_b: list["StudentRelationship"] = Relationship(
+        back_populates="student_b",
+        sa_relationship_kwargs={
+            "primaryjoin": "Student.id==StudentRelationship.student_b_id",
+            "cascade": "all, delete-orphan"
+        }
+    )
+
+
+class SocialLink(SQLModel, table=True):
+    __tablename__ = "social_links"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    student_id: uuid.UUID = Field(foreign_key="students.id")
+    platform: str
+    username: str
+    url: str
+
+    student: "Student" = Relationship(back_populates="social_links")
+
+
+class Club(SQLModel, table=True):
+    __tablename__ = "clubs"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    name: str = Field(unique=True)
+    slug: Optional[str] = Field(default=None)
+    description: Optional[str] = Field(default=None, sa_column=Column(Text))
+    logo_url: Optional[str] = Field(default=None)
+    type: Optional[str] = Field(default=None)                      # e.g. "Club", "Bureau"
+    association_of_origin: Optional[str] = Field(default=None)     # e.g. "BDE", "BDA", "ASINT"
+    color_primary: Optional[str] = Field(default=None)
+    color_secondary: Optional[str] = Field(default=None)
+
+    members: list["StudentClub"] = Relationship(
+        back_populates="club",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"}
+    )
+    events: list["AgendaEvent"] = Relationship(
+        back_populates="club",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"}
+    )
+
+
+class RelationshipType(SQLModel, table=True):
+    __tablename__ = "relationship_types"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    name: str = Field(unique=True)
+    color: str = Field(default="#cccccc")
+
+    relationships: list["StudentRelationship"] = Relationship(
+        back_populates="relationship_type",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"}
+    )
+
+
+class Media(SQLModel, table=True):
+    __tablename__ = "media"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    student_id: uuid.UUID = Field(foreign_key="students.id")
+    type: str  # IMAGE, VIDEO, NOTE
+    file_path: Optional[str] = Field(default=None)
+    content: Optional[str] = Field(default=None, sa_column=Column(Text))
+    author_name: Optional[str] = Field(default=None)
+    uploaded_by_user_id: Optional[uuid.UUID] = Field(default=None, foreign_key="users.id")
+    uploaded_at: datetime = Field(default_factory=datetime.utcnow)
+
+    student: "Student" = Relationship(back_populates="media")
+    uploader: Optional["User"] = Relationship()
+
+
+class AgendaEvent(SQLModel, table=True):
+    __tablename__ = "agenda_events"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    event_ref_id: str = Field(unique=True, index=True)
+    calendar_id: str = Field(index=True)
+    name: str
+    type: str
+    start_time: datetime = Field(index=True)
+    end_time: datetime
+    room: Optional[str] = Field(default=None)
+    description: Optional[str] = Field(default=None, sa_column=Column(Text))
+    professors: Optional[str] = Field(default=None, sa_column=Column(Text))
+    club_id: Optional[uuid.UUID] = Field(default=None, foreign_key="clubs.id")
+
+    students: list["StudentAgendaEvent"] = Relationship(
+        back_populates="event",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"}
+    )
+    club: Optional["Club"] = Relationship(back_populates="events")
+
+
+# Alias Base to SQLModel to avoid breaking alembic environment file expectations immediately
+Base = SQLModel
