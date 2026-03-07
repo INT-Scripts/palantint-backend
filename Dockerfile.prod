@@ -2,7 +2,8 @@ FROM ghcr.io/astral-sh/uv:alpine
 
 WORKDIR /app
 
-COPY . .
+# Copy necessary local packages
+COPY backend /app
 
 RUN uv sync --frozen --no-cache --no-dev
 

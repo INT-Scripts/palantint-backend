@@ -20,7 +20,6 @@ import os
 import sys
 # add your model's MetaData object here
 # for 'autogenerate' support
-sys.path.insert(0, os.path.realpath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 from db.models import SQLModel
 target_metadata = SQLModel.metadata
 

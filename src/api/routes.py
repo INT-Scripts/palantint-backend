@@ -23,6 +23,8 @@ from core.auth import (
     create_access_token,
     get_password_hash,
     verify_password,
+    encrypt_password,
+    decrypt_password,
 )
 from db.database import get_db
 from db.models import User
@@ -73,6 +75,190 @@ class UserCreate(BaseModel):
     password: str
     is_admin: bool = False
 
+from db.models import Student, Club, AgendaEvent
+from sqlalchemy import func
+import secrets
+import string
+
+@router.get("/admin/telemetry")
+async def get_system_telemetry(
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    students_count = await db.scalar(select(func.count(Student.id)))
+    clubs_count = await db.scalar(select(func.count(Club.id)))
+    events_count = await db.scalar(select(func.count(AgendaEvent.id)))
+    users_count = await db.scalar(select(func.count(User.id)))
+    
+    return {
+        "status": "online",
+        "counts": {
+            "students": students_count,
+            "clubs": clubs_count,
+            "events": events_count,
+            "users": users_count
+        }
+    }
+
+class ApartmentUpdate(BaseModel):
+    apartment: str | None
+
+@router.patch("/admin/students/{student_id}/apartment")
+async def update_student_apartment(
+    student_id: uuid.UUID,
+    data: ApartmentUpdate,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Student).where(Student.id == student_id))
+    student = result.scalars().first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+        
+    student.apartment = data.apartment
+    await db.commit()
+    return {"status": "success", "apartment": student.apartment}
+
+class StudentPatch(BaseModel):
+    first_name: str | None = None
+    last_name: str | None = None
+    ecole: str | None = None
+    promo: str | None = None
+    apartment: str | None = None
+
+@router.get("/admin/students/grid")
+async def get_students_grid(
+    skip: int = 0,
+    limit: int = 100,
+    search: str = "",
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    from sqlalchemy.orm import aliased
+    from sqlalchemy import select, or_, outerjoin
+    
+    # We want to join User to see who has an account
+    query = select(Student, User).outerjoin(User, User.username == Student.trombint_id)
+    
+    if search:
+        query = query.where(
+            or_(
+                Student.first_name.ilike(f"%{search}%"),
+                Student.last_name.ilike(f"%{search}%"),
+                Student.trombint_id.ilike(f"%{search}%")
+            )
+        )
+        
+    query = query.order_by(Student.last_name).offset(skip).limit(limit)
+    
+    result = await db.execute(query)
+    rows = result.all()
+    
+    return [
+        {
+            "id": str(student.id),
+            "trombint_id": student.trombint_id,
+            "first_name": student.first_name,
+            "last_name": student.last_name,
+            "ecole": student.ecole,
+            "promo": student.promo,
+            "apartment": student.apartment,
+            "is_active": student.is_active,
+            "user_id": str(user.id) if user else None,
+            "is_admin": user.is_admin if user else False
+        }
+        for student, user in rows
+    ]
+
+@router.patch("/admin/students/{student_id}")
+async def patch_student_grid(
+    student_id: uuid.UUID,
+    data: StudentPatch,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Student).where(Student.id == student_id))
+    student = result.scalars().first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+        
+    update_data = data.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(student, key, value)
+        
+    await db.commit()
+    return {"status": "success"}
+
+class ProvisionRequest(BaseModel):
+    student_id: uuid.UUID
+    is_admin: bool = False
+
+@router.post("/admin/users/provision")
+async def provision_user(
+    req: ProvisionRequest,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Student).where(Student.id == req.student_id))
+    student = result.scalars().first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+        
+    user_check = await db.execute(select(User).where(User.username == student.trombint_id))
+    if user_check.scalars().first():
+        raise HTTPException(status_code=400, detail="User already provisioned for this student")
+        
+    alphabet = string.ascii_letters + string.digits
+    password = ''.join(secrets.choice(alphabet) for i in range(12))
+    
+    db_user = User(
+        username=student.trombint_id,
+        hashed_password=get_password_hash(password),
+        is_admin=req.is_admin
+    )
+    db.add(db_user)
+    await db.commit()
+    
+    return {
+        "status": "success",
+        "user_id": str(db_user.id),
+        "username": db_user.username,
+        "generated_password": password,
+        "is_admin": db_user.is_admin
+    }
+
+from sqlalchemy import or_
+
+@router.get("/admin/students/search")
+async def search_students_admin(
+    q: str = "",
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    if not q or len(q) < 2:
+        return []
+    
+    query = select(Student).where(
+        or_(
+            Student.first_name.ilike(f"%{q}%"),
+            Student.last_name.ilike(f"%{q}%"),
+            Student.trombint_id.ilike(f"%{q}%")
+        )
+    ).limit(10)
+    
+    result = await db.execute(query)
+    students = result.scalars().all()
+    
+    return [
+        {
+            "id": str(s.id),
+            "first_name": s.first_name,
+            "last_name": s.last_name,
+            "trombint_id": s.trombint_id,
+            "apartment": s.apartment
+        }
+        for s in students
+    ]
 
 @router.post("/auth/login")
 async def login_for_access_token(
@@ -168,6 +354,39 @@ async def delete_user(
     await db.commit()
     return {"status": "success", "message": "User deleted"}
 
+
+class CasCredentialsUpdate(BaseModel):
+    cas_username: str
+    cas_password: str
+
+@router.post("/users/me/cas-credentials")
+async def update_cas_credentials(
+    data: CasCredentialsUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    current_user.cas_username = data.cas_username
+    current_user.encrypted_cas_password = encrypt_password(data.cas_password)
+    await db.commit()
+    return {"status": "success", "message": "CAS credentials securely stored"}
+
+@router.get("/users/me/cas-credentials")
+async def get_cas_status(current_user: User = Depends(get_current_user)):
+    return {
+        "has_credentials": current_user.cas_username is not None,
+        "cas_username": current_user.cas_username
+    }
+
+@router.get("/users/me/student")
+async def get_my_student_profile(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Student).where(Student.trombint_id == current_user.username))
+    student = result.scalars().first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student profile not found for this user")
+    return student
 
 @router.get("/users/me")
 async def read_users_me(current_user: User = Depends(get_current_user)):

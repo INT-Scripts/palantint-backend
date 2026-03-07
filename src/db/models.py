@@ -17,11 +17,15 @@ class User(SQLModel, table=True):
     is_admin: bool = Field(default=False)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
+    # External Credentials (Stored Encrypted)
+    cas_username: Optional[str] = Field(default=None)
+    encrypted_cas_password: Optional[str] = Field(default=None)
+
 
 class RecentlyViewed(SQLModel, table=True):
     __tablename__ = "recently_viewed"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
-    user_id: uuid.UUID = Field(foreign_key="users.id", index=True)
+    user_id: uuid.UUID = Field(sa_column=Column(PGUUID, ForeignKey("users.id", ondelete="CASCADE"), index=True))
     student_id: uuid.UUID = Field(foreign_key="students.id")
     viewed_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -84,6 +88,7 @@ class Student(SQLModel, table=True):
     last_name: str = Field(default="")
     email: Optional[str] = Field(default=None, index=True)
     profile_picture_path: Optional[str] = Field(default=None)
+    is_active: bool = Field(default=True, index=True)
 
     # Academic
     ecole: Optional[str] = Field(default=None)       # e.g. "Télécom SudParis", "IMT-BS"
@@ -98,6 +103,7 @@ class Student(SQLModel, table=True):
         default_factory=datetime.utcnow,
         sa_column_kwargs={"onupdate": datetime.utcnow}
     )
+    last_seen_at: datetime = Field(default_factory=datetime.utcnow)
 
     # Relationships
     social_links: list["SocialLink"] = Relationship(

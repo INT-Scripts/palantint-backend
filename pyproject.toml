@@ -30,3 +30,11 @@ dev = [
 [tool.ruff]
 lint.ignore = ["E402", "E501"]
 lint.extend-select = ["I"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/db", "src/core"]
+

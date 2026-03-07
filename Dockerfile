@@ -2,14 +2,12 @@ FROM ghcr.io/astral-sh/uv:alpine
 
 WORKDIR /app
 
-# Copy dependency files first
-COPY pyproject.toml uv.lock ./
+# Copy the backend directory
+# Context is the root PalantINT directory
+COPY backend /app
 
-# Sync dependencies (this caches the layer)
+# Sync dependencies (frozen ensures uv.lock is used)
 RUN uv sync --frozen
-
-# Then copy the rest of the app
-COPY . .
 
 EXPOSE 3000
 
