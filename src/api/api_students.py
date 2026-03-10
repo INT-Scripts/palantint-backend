@@ -1,15 +1,17 @@
 import os
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
+from pydantic import BaseModel
 
 from api.routes import User, get_current_user, get_current_admin_user
 from db.database import get_db
-from db.models import SocialLink, Student, StudentClub
+from db.models import SocialLink, Student, StudentClub, RecentlyViewed
 
 router = APIRouter(prefix="/students", tags=["students"])
 
@@ -23,12 +25,12 @@ async def get_student_image(student_id: uuid.UUID, db: AsyncSession = Depends(ge
     if not student or not student.trombint_id:
         raise HTTPException(status_code=404, detail="Image not found")
 
-    local_path = os.path.join(UPLOAD_PROFILES_DIR, f"{student.trombint_id}.jpg")
+    extensions = [".jpg", ".jpeg", ".png", ".webp", ".svg", ".gif"]
+    for ext in extensions:
+        local_path = os.path.join(UPLOAD_PROFILES_DIR, f"{student.trombint_id}{ext}")
+        if os.path.exists(local_path):
+            return FileResponse(local_path)
 
-    if os.path.exists(local_path):
-        return FileResponse(local_path)
-
-    # Image not yet downloaded — will be available after next sync
     raise HTTPException(
         status_code=404,
         detail="Image not yet downloaded. Run a sync to download images.",
@@ -37,7 +39,6 @@ async def get_student_image(student_id: uuid.UUID, db: AsyncSession = Depends(ge
 
 @router.get("/apartments/occupied")
 async def get_occupied_apartments(db: AsyncSession = Depends(get_db)):
-    # Get all students that have an apartment set
     result = await db.execute(
         select(
             Student.id, Student.first_name, Student.last_name, Student.apartment
@@ -67,7 +68,6 @@ async def get_students(
     query = select(Student)
     if q:
         from sqlalchemy import func, or_
-
         query = query.where(
             or_(
                 func.unaccent(Student.first_name).ilike(func.unaccent(f"%{q}%")),
@@ -76,11 +76,8 @@ async def get_students(
                 func.unaccent(Student.ecole).ilike(func.unaccent(f"%{q}%")),
             )
         )
-    result = await db.execute(query.offset(skip).limit(limit))
+    result = await db.execute(query.offset(skip).limit(limit).order_by(Student.last_name))
     return result.scalars().all()
-
-
-from db.models import RecentlyViewed
 
 
 @router.get("/recent")
@@ -95,9 +92,7 @@ async def get_recent_students(
         .limit(10)
     )
     rvs = result.scalars().all()
-    # Extract just the student objects
-    students = [rv.student for rv in rvs if rv.student]
-    return students
+    return [rv.student for rv in rvs if rv.student]
 
 
 @router.get("/{student_id}")
@@ -114,10 +109,49 @@ async def get_student(student_id: uuid.UUID, db: AsyncSession = Depends(get_db))
     student = result.scalars().first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
-    return student
-
-
-from datetime import datetime
+    
+    # MANUAL SERIALIZATION to ensure all nested objects are strictly as expected by frontend
+    return {
+        "id": str(student.id),
+        "trombint_id": student.trombint_id,
+        "first_name": student.first_name,
+        "last_name": student.last_name,
+        "email": student.email,
+        "promo": student.promo,
+        "ecole": student.ecole,
+        "apartment": student.apartment,
+        "social_links": [
+            {
+                "id": str(s.id),
+                "platform": s.platform,
+                "username": s.username,
+                "url": s.url
+            } for s in student.social_links
+        ],
+        "clubs": [
+            {
+                "club_id": str(sc.club.id),
+                "club_name": sc.club.name,
+                "role": sc.role,
+                "is_mandat": sc.is_mandat,
+                "club": {
+                    "id": str(sc.club.id),
+                    "name": sc.club.name,
+                    "logo_url": sc.club.logo_url
+                }
+            } for sc in student.clubs if sc.club
+        ],
+        "media": [
+            {
+                "id": str(m.id),
+                "type": m.type,
+                "file_path": m.file_path,
+                "content": m.content,
+                "author_name": m.author_name,
+                "uploaded_at": m.uploaded_at.isoformat()
+            } for m in student.media
+        ]
+    }
 
 
 @router.post("/{student_id}/recently-viewed")
@@ -146,9 +180,6 @@ async def add_recently_viewed(
 
     await db.commit()
     return {"status": "ok"}
-
-
-from pydantic import BaseModel
 
 
 class SocialLinkCreate(BaseModel):

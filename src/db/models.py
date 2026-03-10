@@ -1,8 +1,8 @@
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
-from sqlalchemy import Column, DateTime, ForeignKey, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, String, Text, JSON, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlmodel import Field, Relationship, SQLModel
 
@@ -149,6 +149,16 @@ class SocialLink(SQLModel, table=True):
     student: "Student" = Relationship(back_populates="social_links")
 
 
+class ClubLink(SQLModel, table=True):
+    __tablename__ = "club_links"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    club_id: uuid.UUID = Field(foreign_key="clubs.id")
+    name: str
+    url: str
+
+    club: "Club" = Relationship(back_populates="links")
+
+
 class Club(SQLModel, table=True):
     __tablename__ = "clubs"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
@@ -166,6 +176,10 @@ class Club(SQLModel, table=True):
         sa_relationship_kwargs={"cascade": "all, delete-orphan"}
     )
     events: list["AgendaEvent"] = Relationship(
+        back_populates="club",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"}
+    )
+    links: list["ClubLink"] = Relationship(
         back_populates="club",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"}
     )
@@ -217,6 +231,18 @@ class AgendaEvent(SQLModel, table=True):
         sa_relationship_kwargs={"cascade": "all, delete-orphan"}
     )
     club: Optional["Club"] = Relationship(back_populates="events")
+
+
+class MapMetadata(SQLModel, table=True):
+    __tablename__ = "maps_metadata"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    building_id: str = Field(index=True)
+    floor_id: str = Field(index=True)
+    pillars: List[Dict[str, float]] = Field(default_factory=list, sa_column=Column(JSON))
+
+    __table_args__ = (
+        UniqueConstraint("building_id", "floor_id", name="uq_building_floor"),
+    )
 
 
 # Alias Base to SQLModel to avoid breaking alembic environment file expectations immediately

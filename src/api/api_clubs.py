@@ -65,6 +65,38 @@ async def remove_student_club(
     return {"status": "removed"}
 
 
+class StudentClubUpdate(BaseModel):
+    role: str | None = None
+    is_mandat: bool | None = None
+
+
+@router.patch("/students/{student_id}/clubs/{club_id}")
+async def update_student_club(
+    student_id: uuid.UUID,
+    club_id: uuid.UUID,
+    data: StudentClubUpdate,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(StudentClub).where(
+            StudentClub.student_id == student_id, StudentClub.club_id == club_id
+        )
+    )
+    sc = result.scalars().first()
+    if not sc:
+        raise HTTPException(status_code=404, detail="Student is not in this club")
+
+    if data.role is not None:
+        sc.role = data.role
+    if data.is_mandat is not None:
+        sc.is_mandat = data.is_mandat
+
+    await db.commit()
+    await db.refresh(sc)
+    return sc
+
+
 from sqlalchemy.orm import selectinload
 
 
@@ -75,6 +107,7 @@ async def get_club_details(club_id: uuid.UUID, db: AsyncSession = Depends(get_db
         .options(
             selectinload(Club.members).selectinload(StudentClub.student),
             selectinload(Club.events),
+            selectinload(Club.links),
         )
         .where(Club.id == club_id)
     )
@@ -109,6 +142,7 @@ async def get_club_details(club_id: uuid.UUID, db: AsyncSession = Depends(get_db
         "color_secondary": club.color_secondary,
         "slug": club.slug,
         "members": members,
+        "links": [{"name": link.name, "url": link.url} for link in club.links] if club.links else [],
         "events": [
             {
                 "id": str(e.id),
