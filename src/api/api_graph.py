@@ -5,11 +5,15 @@ from sqlalchemy.orm import selectinload
 
 from db.database import get_db
 from db.models import Student, Club, StudentClub, StudentRelationship, RelationshipType
+from api.routes import User, get_current_user
 
 router = APIRouter(prefix="/graph", tags=["graph"])
 
 @router.get("")
-async def get_full_graph(db: AsyncSession = Depends(get_db)):
+async def get_full_graph(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Returns all students, clubs, and their relationships as a graph structure."""
     # 1. Fetch Students
     student_res = await db.execute(select(Student.id, Student.first_name, Student.last_name, Student.trombint_id, Student.profile_picture_path))

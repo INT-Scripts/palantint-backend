@@ -12,7 +12,10 @@ router = APIRouter(tags=["relationships"])
 
 
 @router.get("/relationship-types")
-async def get_relationship_types(db: AsyncSession = Depends(get_db)):
+async def get_relationship_types(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     result = await db.execute(select(RelationshipType))
     return result.scalars().all()
 
@@ -24,7 +27,9 @@ from db.models import Student
 
 @router.get("/students/{student_id}/relationships")
 async def get_student_relationships(
-    student_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+    student_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     from sqlalchemy import or_
 

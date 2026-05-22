@@ -5,15 +5,56 @@ from sqlalchemy.future import select
 from sqlalchemy import or_, func, and_
 from db.database import get_db
 from db.models import Student, Club
+from api.routes import User, get_current_user_optional
 
 router = APIRouter(prefix="/search", tags=["search"])
 
 @router.get("")
-async def global_search(q: str = "", db: AsyncSession = Depends(get_db)):
+async def global_search(
+    q: str = "",
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(get_current_user_optional),
+):
     if not q or len(q) < 2:
         return {"students": [], "clubs": [], "apartments": []}
 
     query_clean = q.strip().lower()
+    
+    if not current_user:
+        # If not logged in, search ONLY clubs and return empty for students/apartments
+        club_query = select(Club).where(
+            or_(
+                func.unaccent(Club.name).ilike(func.unaccent(f"%{query_clean}%")),
+                func.unaccent(Club.slug).ilike(f"%{query_clean}%")
+            )
+        ).limit(10)
+        club_res = await db.execute(club_query)
+        clubs_raw = club_res.scalars().all()
+        
+        ranked_clubs = []
+        for c in clubs_raw:
+            score = 0
+            name = c.name.lower()
+            slug = (c.slug or "").lower()
+            if name == query_clean: score += 100
+            if slug == query_clean: score += 90
+            if name.startswith(query_clean): score += 50
+            ranked_clubs.append((score, c))
+        ranked_clubs.sort(key=lambda x: x[0], reverse=True)
+
+        return {
+            "students": [],
+            "clubs": [
+                {
+                    "id": str(c.id),
+                    "name": c.name,
+                    "slug": c.slug,
+                    "logo_url": c.logo_url
+                } for score, c in ranked_clubs[:5]
+            ],
+            "apartments": []
+        }
+
     search_terms = query_clean.split()
     
     # 1. SEARCH STUDENTS

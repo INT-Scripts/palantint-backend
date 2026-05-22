@@ -9,7 +9,7 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from pydantic import BaseModel
 
-from api.routes import User, get_current_user, get_current_admin_user
+from api.routes import User, get_current_user, get_current_admin_user, get_current_user_optional
 from db.database import get_db
 from db.models import SocialLink, Student, StudentClub, RecentlyViewed
 
@@ -20,7 +20,11 @@ os.makedirs(UPLOAD_PROFILES_DIR, exist_ok=True)
 
 
 @router.get("/{student_id}/image")
-async def get_student_image(student_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_student_image(
+    student_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     student = await db.get(Student, student_id)
     if not student or not student.trombint_id:
         raise HTTPException(status_code=404, detail="Image not found")
@@ -38,7 +42,10 @@ async def get_student_image(student_id: uuid.UUID, db: AsyncSession = Depends(ge
 
 
 @router.get("/apartments/occupied")
-async def get_occupied_apartments(db: AsyncSession = Depends(get_db)):
+async def get_occupied_apartments(
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(get_current_user_optional),
+):
     result = await db.execute(
         select(
             Student.id, Student.first_name, Student.last_name, Student.apartment
@@ -51,19 +58,24 @@ async def get_occupied_apartments(db: AsyncSession = Depends(get_db)):
         if apt:
             if apt not in out:
                 out[apt] = []
-            out[apt].append(
-                {
-                    "id": str(row.id),
-                    "first_name": row.first_name,
-                    "last_name": row.last_name,
-                }
-            )
+            if current_user:
+                out[apt].append(
+                    {
+                        "id": str(row.id),
+                        "first_name": row.first_name,
+                        "last_name": row.last_name,
+                    }
+                )
     return out
 
 
 @router.get("")
 async def get_students(
-    skip: int = 0, limit: int = 24, q: str = None, db: AsyncSession = Depends(get_db)
+    skip: int = 0,
+    limit: int = 24,
+    q: str = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     query = select(Student)
     if q:
@@ -96,7 +108,11 @@ async def get_recent_students(
 
 
 @router.get("/{student_id}")
-async def get_student(student_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_student(
+    student_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     result = await db.execute(
         select(Student)
         .options(

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from api.routes import User, get_current_admin_user
+from api.routes import User, get_current_admin_user, get_current_user_optional
 from db.database import get_db
 from db.models import Club, StudentClub
 
@@ -101,7 +101,11 @@ from sqlalchemy.orm import selectinload
 
 
 @router.get("/clubs/{club_id}")
-async def get_club_details(club_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_club_details(
+    club_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(get_current_user_optional),
+):
     result = await db.execute(
         select(Club)
         .options(
@@ -116,20 +120,21 @@ async def get_club_details(club_id: uuid.UUID, db: AsyncSession = Depends(get_db
         raise HTTPException(status_code=404, detail="Club not found")
 
     members = []
-    for sc in club.members:
-        members.append(
-            {
-                "student_id": str(sc.student.id),
-                "first_name": sc.student.first_name,
-                "last_name": sc.student.last_name,
-                "trombint_id": sc.student.trombint_id,
-                "profile_picture_path": sc.student.profile_picture_path,
-                "promo": sc.student.promo,
-                "ecole": sc.student.ecole,
-                "role": sc.role,
-                "is_mandat": sc.is_mandat,
-            }
-        )
+    if current_user:
+        for sc in club.members:
+            members.append(
+                {
+                    "student_id": str(sc.student.id),
+                    "first_name": sc.student.first_name,
+                    "last_name": sc.student.last_name,
+                    "trombint_id": sc.student.trombint_id,
+                    "profile_picture_path": sc.student.profile_picture_path,
+                    "promo": sc.student.promo,
+                    "ecole": sc.student.ecole,
+                    "role": sc.role,
+                    "is_mandat": sc.is_mandat,
+                }
+            )
 
     return {
         "id": str(club.id),
