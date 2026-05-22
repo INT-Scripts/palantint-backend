@@ -245,5 +245,19 @@ class MapMetadata(SQLModel, table=True):
     )
 
 
+class ApartmentDetail(SQLModel, table=True):
+    __tablename__ = "apartment_details"
+    id: str = Field(primary_key=True)  # Room number (e.g., "1001")
+    building: str = Field(index=True)  # Building (e.g., "U1")
+    floor: str = Field(index=True)     # Floor name (e.g., "Rez de Chaussée")
+    type: Optional[str] = Field(default=None)
+    surface: Optional[str] = Field(default=None)
+    price: Optional[str] = Field(default=None)
+    alloc_boursier: Optional[str] = Field(default=None)
+    alloc_non_boursier: Optional[str] = Field(default=None)
+    req_b: int = Field(default=0)
+    req_e: str = Field(default="")
+
+
 # Alias Base to SQLModel to avoid breaking alembic environment file expectations immediately
 Base = SQLModel

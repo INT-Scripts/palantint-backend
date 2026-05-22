@@ -23,7 +23,7 @@ os.makedirs(UPLOAD_PROFILES_DIR, exist_ok=True)
 async def get_student_image(
     student_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User | None = Depends(get_current_user_optional),
 ):
     student = await db.get(Student, student_id)
     if not student or not student.trombint_id:
@@ -66,6 +66,31 @@ async def get_occupied_apartments(
                         "last_name": row.last_name,
                     }
                 )
+    return out
+
+
+@router.get("/apartments/details")
+async def get_apartment_details(
+    db: AsyncSession = Depends(get_db)
+):
+    from db.models import ApartmentDetail
+    result = await db.execute(select(ApartmentDetail))
+    details = result.scalars().all()
+    
+    out = {}
+    for d in details:
+        out[d.id] = {
+            "Logement": d.id,
+            "Bâtiment": d.building,
+            "Etage": d.floor,
+            "Type": d.type,
+            "Superficie": d.surface,
+            "Tarif": d.price,
+            "Allocation boursier": d.alloc_boursier,
+            "Allocation non boursier": d.alloc_non_boursier,
+            "_req_b": d.req_b,
+            "_req_e": d.req_e
+        }
     return out
 
 

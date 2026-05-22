@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 
-from api.routes import User, get_current_admin_user, get_current_user
+from api.routes import User, get_current_admin_user, get_current_user, get_current_user_optional
 from db.database import get_db
 from db.models import Media, Student
 
@@ -24,7 +24,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 async def serve_media_file(
     media_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User | None = Depends(get_current_user_optional),
 ):
     """Serve the actual media file by media ID."""
     media = await db.get(Media, media_id)
