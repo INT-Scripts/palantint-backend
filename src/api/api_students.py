@@ -132,11 +132,13 @@ async def get_student(student_id: uuid.UUID, db: AsyncSession = Depends(get_db))
             {
                 "club_id": str(sc.club.id),
                 "club_name": sc.club.name,
+                "club_type": sc.club.type,
                 "role": sc.role,
                 "is_mandat": sc.is_mandat,
                 "club": {
                     "id": str(sc.club.id),
                     "name": sc.club.name,
+                    "type": sc.club.type,
                     "logo_url": sc.club.logo_url
                 }
             } for sc in student.clubs if sc.club

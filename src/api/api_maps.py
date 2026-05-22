@@ -60,6 +60,52 @@ async def save_map_metadata(
     await db.commit()
     return {"status": "success"}
 
+class ThreeDConfigSchema(BaseModel):
+    tile_mappings: Dict[str, str] = {}
+    markers: List[Dict[str, Any]] = []
+
+@router.get("/3d-config", response_model=ThreeDConfigSchema)
+async def get_3d_config():
+    """Returns the configuration for 3D tile mappings and markers."""
+    config_path = "/app/assets/3d/config.json"
+    if os.path.exists(config_path):
+        import json
+        with open(config_path, 'r') as f:
+            return ThreeDConfigSchema(**json.load(f))
+    return ThreeDConfigSchema()
+
+@router.post("/3d-config")
+async def save_3d_config(
+    config: ThreeDConfigSchema,
+    current_admin: User = Depends(get_current_admin_user)
+):
+    """Saves the configuration for 3D tile mappings and markers."""
+    config_path = "/app/assets/3d/config.json"
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
+    import json
+    with open(config_path, 'w') as f:
+        json.dump(config.model_dump(), f, indent=4)
+    return {"status": "success"}
+
+@router.get("/3d-tiles")
+async def get_3d_tiles():
+    """Returns a list of available 3D tile GLTF files."""
+    tiles_dir = "/app/assets/3d"
+    if not os.path.exists(tiles_dir):
+        return {"tiles": []}
+    
+    # List all .gltf files and sort them to maintain order
+    files = [f for f in os.listdir(tiles_dir) if f.endswith(".gltf")]
+    # Try to sort logically if possible (e.g. tile_1, tile_2...)
+    try:
+        files.sort(key=lambda x: int(x.replace('tile_', '').replace('.gltf', '')))
+    except Exception:
+        files.sort()
+        
+    # Return full paths as accessed via the static mount
+    urls = [f"/api/assets/3d/{f}" for f in files]
+    return {"tiles": urls}
+
 @router.get("/{building_id}/metadata")
 async def get_building_metadata(building_id: str, db: AsyncSession = Depends(get_db)):
     stmt = select(MapMetadata).where(MapMetadata.building_id == building_id)
