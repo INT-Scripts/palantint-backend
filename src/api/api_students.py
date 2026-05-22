@@ -15,7 +15,7 @@ from db.models import SocialLink, Student, StudentClub, RecentlyViewed
 
 router = APIRouter(prefix="/students", tags=["students"])
 
-UPLOAD_PROFILES_DIR = "/app/assets/profiles"
+UPLOAD_PROFILES_DIR = "/app/private_assets/profiles"
 os.makedirs(UPLOAD_PROFILES_DIR, exist_ok=True)
 
 

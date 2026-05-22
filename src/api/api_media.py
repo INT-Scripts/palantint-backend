@@ -16,7 +16,7 @@ router = APIRouter(tags=["media"])
 
 # Admin configurable limit, can be loaded from DB or ENV. Set 50MB default.
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "50"))
-UPLOAD_DIR = "/app/assets/media"
+UPLOAD_DIR = "/app/private_assets/media"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
@@ -32,6 +32,9 @@ async def serve_media_file(
         raise HTTPException(status_code=404, detail="Media file not found")
 
     abs_path = os.path.abspath(media.file_path)
+    if "/app/assets/media" in abs_path:
+        abs_path = abs_path.replace("/app/assets/media", "/app/private_assets/media")
+        
     if not os.path.exists(abs_path):
         raise HTTPException(status_code=404, detail="File not found on disk")
 

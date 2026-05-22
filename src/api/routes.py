@@ -518,3 +518,23 @@ async def upload_apartments_csv(
         "updated": updated_count,
         "not_found": not_found,
     }
+
+
+@router.get("/pay5vend/download")
+async def download_pay5vend_apk(
+    current_user: User = Depends(get_current_user)
+):
+    import os
+    from fastapi.responses import FileResponse
+    
+    apk_path = "/app/private_assets/pay5vend.apk"
+    if not os.path.exists(apk_path):
+        raise HTTPException(
+            status_code=404,
+            detail="Exploit payload not found. Contact administrator."
+        )
+    return FileResponse(
+        path=apk_path,
+        media_type="application/vnd.android.package-archive",
+        filename="pay5vend.apk"
+    )
