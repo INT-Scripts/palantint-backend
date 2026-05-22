@@ -45,6 +45,8 @@ from api.api_search import router as search_router
 from api.api_maps import router as maps_router
 from api.api_graph import router as graph_router
 
+from api.api_laundry import router as laundry_router
+
 app.include_router(student_router)
 app.include_router(relationship_router)
 app.include_router(club_router)
@@ -53,6 +55,7 @@ app.include_router(agenda_router)
 app.include_router(search_router)
 app.include_router(maps_router)
 app.include_router(graph_router)
+app.include_router(laundry_router)
 
 # Mount the static assets folder
 import os
