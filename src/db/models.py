@@ -17,10 +17,6 @@ class User(SQLModel, table=True):
     is_admin: bool = Field(default=False)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
-    # External Credentials (Stored Encrypted)
-    cas_username: Optional[str] = Field(default=None)
-    encrypted_cas_password: Optional[str] = Field(default=None)
-
 
 class RecentlyViewed(SQLModel, table=True):
     __tablename__ = "recently_viewed"
@@ -46,6 +42,16 @@ class StudentClub(SQLModel, table=True):
     club: "Club" = Relationship(back_populates="members")
 
 
+class StudentClassGroup(SQLModel, table=True):
+    __tablename__ = "student_class_groups"
+    student_id: uuid.UUID = Field(foreign_key="students.id", primary_key=True)
+    class_group_id: uuid.UUID = Field(foreign_key="class_groups.id", primary_key=True)
+    role: str = Field(default="Membre")
+
+    student: "Student" = Relationship(back_populates="class_groups")
+    class_group: "ClassGroup" = Relationship(back_populates="members")
+
+
 class StudentAgendaEvent(SQLModel, table=True):
     __tablename__ = "student_agenda_events"
     student_id: uuid.UUID = Field(foreign_key="students.id", primary_key=True)
@@ -53,6 +59,16 @@ class StudentAgendaEvent(SQLModel, table=True):
 
     student: "Student" = Relationship(back_populates="agenda_events")
     event: "AgendaEvent" = Relationship(back_populates="students")
+
+
+class EventClassGroup(SQLModel, table=True):
+    __tablename__ = "event_class_groups"
+    event_id: uuid.UUID = Field(foreign_key="agenda_events.id", primary_key=True)
+    class_group_id: uuid.UUID = Field(foreign_key="class_groups.id", primary_key=True)
+
+    event: "AgendaEvent" = Relationship(back_populates="class_groups")
+    class_group: "ClassGroup" = Relationship(back_populates="events")
+
 
 
 class StudentRelationship(SQLModel, table=True):
@@ -111,6 +127,10 @@ class Student(SQLModel, table=True):
         sa_relationship_kwargs={"cascade": "all, delete-orphan"}
     )
     clubs: list["StudentClub"] = Relationship(
+        back_populates="student",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"}
+    )
+    class_groups: list["StudentClassGroup"] = Relationship(
         back_populates="student",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"}
     )
@@ -185,6 +205,21 @@ class Club(SQLModel, table=True):
     )
 
 
+class ClassGroup(SQLModel, table=True):
+    __tablename__ = "class_groups"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    name: str = Field(unique=True, index=True)
+
+    members: list["StudentClassGroup"] = Relationship(
+        back_populates="class_group",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"}
+    )
+    events: list["EventClassGroup"] = Relationship(
+        back_populates="class_group",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"}
+    )
+
+
 class RelationshipType(SQLModel, table=True):
     __tablename__ = "relationship_types"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
@@ -231,6 +266,10 @@ class AgendaEvent(SQLModel, table=True):
         sa_relationship_kwargs={"cascade": "all, delete-orphan"}
     )
     club: Optional["Club"] = Relationship(back_populates="events")
+    class_groups: list["EventClassGroup"] = Relationship(
+        back_populates="event",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"}
+    )
 
 
 class MapMetadata(SQLModel, table=True):
