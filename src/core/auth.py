@@ -5,10 +5,8 @@ from typing import Optional
 from jose import jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
-from cryptography.fernet import Fernet
 
 SECRET_KEY = os.getenv("SECRET_KEY", "super-secret-key-change-in-production")
-FERNET_KEY = os.getenv("FERNET_KEY", "dnJfSkdwTkZURXRZdllyZndidXZidXZidXZidXZidXZi")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days for app access
 
@@ -42,17 +40,3 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
-
-
-def encrypt_password(password: str) -> str:
-    if not password:
-        return None
-    f = Fernet(FERNET_KEY.encode())
-    return f.encrypt(password.encode()).decode()
-
-
-def decrypt_password(encrypted_password: str) -> str:
-    if not encrypted_password:
-        return None
-    f = Fernet(FERNET_KEY.encode())
-    return f.decrypt(encrypted_password.encode()).decode()

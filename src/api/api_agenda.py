@@ -9,7 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from api.routes import User, get_current_user
 from db.database import get_db
-from db.models import AgendaEvent, Student, StudentAgendaEvent, StudentClub
+from db.models import AgendaEvent, Student, StudentAgendaEvent, StudentClub, StudentClassGroup, EventClassGroup
 
 router = APIRouter(tags=["agenda"])
 
@@ -31,34 +31,7 @@ def parse_iso_datetime(iso_str: str) -> datetime:
     except Exception:
         raise HTTPException(status_code=400, detail=f"Invalid ISO datetime format: {iso_str}")
 
-def get_implicit_calendar_ids(promo: str, ecole: str) -> List[str]:
-    cids = []
-    if not promo: return cids
-    
-    is_tsp = ecole and ("Télécom SudParis" in ecole or "TSP" in ecole)
-    is_imt = ecole and ("Business School" in ecole or "IMT-BS" in ecole)
-    
-    if promo == "Ingénieur 1ère année":
-        if is_tsp: cids.extend(["PRJ67059", "PRJ67368", "PRJ67367", "PRJ67371"])
-        if is_imt: cids.extend(["PRJ68141", "PRJ68109"])
-    elif promo == "Ingénieur 2ème année":
-        if is_tsp: cids.extend(["PRJ67199", "PRJ67369", "PRJ67367", "PRJ67371"])
-        if is_imt: cids.extend(["PRJ68173", "PRJ68235", "PRJ68225"])
-    elif promo == "Ingénieur 3ème année":
-        if is_tsp: cids.extend(["PRJ66964", "PRJ67372"])
-        if is_imt: cids.extend(["PRJ68454", "PRJ68297", "PRJ68312", "PRJ68334", "PRJ68344", "PRJ68356", "PRJ68374", "PRJ68388", "PRJ68406", "PRJ68425", "PRJ68439"])
-    elif promo == "Bachelor 1ère année":
-        cids.append("PRJ67617")
-    elif promo == "Bachelor 2ème année":
-        cids.append("PRJ67654")
-    elif promo == "Bachelor 3ème année":
-        cids.extend(["PRJ68289", "PRJ68203"])
-    elif promo == "Mastère Spécialisé":
-        cids.extend(["PRJ68821", "PRJ68843"])
-    elif promo in ["Master of Science", "Diplôme National de Master"]:
-        cids.extend(["PRJ68041", "PRJ67817", "PRJ68085", "PRJ67924"])
-        
-    return cids
+
 
 @router.post("/agenda/compare")
 async def compare_agendas(
@@ -77,7 +50,9 @@ async def compare_agendas(
             student = await db.get(Student, student_id)
             if not student: continue
             
-            promo_cals = get_implicit_calendar_ids(student.promo, student.ecole)
+            class_group_ids_subq = select(StudentClassGroup.class_group_id).where(
+                StudentClassGroup.student_id == student_id
+            )
 
             club_ids_subq = select(StudentClub.club_id).where(
                 StudentClub.student_id == student_id
@@ -88,12 +63,15 @@ async def compare_agendas(
                 .outerjoin(
                     StudentAgendaEvent, StudentAgendaEvent.event_id == AgendaEvent.id
                 )
+                .outerjoin(
+                    EventClassGroup, EventClassGroup.event_id == AgendaEvent.id
+                )
                 .options(selectinload(AgendaEvent.club))
                 .where(
                     or_(
                         StudentAgendaEvent.student_id == student_id,
                         AgendaEvent.club_id.in_(club_ids_subq),
-                        AgendaEvent.calendar_id.in_(promo_cals) if promo_cals else False,
+                        EventClassGroup.class_group_id.in_(class_group_ids_subq),
                     ),
                     AgendaEvent.start_time >= dt_start,
                     AgendaEvent.end_time <= dt_end,
@@ -229,25 +207,31 @@ async def get_student_agenda(
         else:
             dt_end = datetime.strptime(end_date, "%Y-%m-%d")
 
+        # Subquery for student's class groups
+        class_group_ids_subq = select(StudentClassGroup.class_group_id).where(
+            StudentClassGroup.student_id == student_id
+        )
+
         # Subquery for student's clubs
         club_ids_subq = select(StudentClub.club_id).where(
             StudentClub.student_id == student_id
         )
 
-        promo_cals = get_implicit_calendar_ids(student.promo, student.ecole)
-
-        # Query events from db.database: direct course links OR club links
+        # Query events from db.database: direct course links OR club links OR class group links
         stmt = (
             select(AgendaEvent)
             .outerjoin(
                 StudentAgendaEvent, StudentAgendaEvent.event_id == AgendaEvent.id
+            )
+            .outerjoin(
+                EventClassGroup, EventClassGroup.event_id == AgendaEvent.id
             )
             .options(selectinload(AgendaEvent.club))
             .where(
                 or_(
                     StudentAgendaEvent.student_id == student_id,
                     AgendaEvent.club_id.in_(club_ids_subq),
-                    AgendaEvent.calendar_id.in_(promo_cals) if promo_cals else False,
+                    EventClassGroup.class_group_id.in_(class_group_ids_subq),
                 ),
                 AgendaEvent.start_time >= dt_start,
                 AgendaEvent.end_time <= dt_end,

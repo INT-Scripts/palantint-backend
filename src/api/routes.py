@@ -9,6 +9,7 @@ from fastapi import (
     Response,
     UploadFile,
     status,
+    Query,
 )
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
@@ -23,8 +24,6 @@ from core.auth import (
     create_access_token,
     get_password_hash,
     verify_password,
-    encrypt_password,
-    decrypt_password,
 )
 from db.database import get_db
 from db.models import User
@@ -53,16 +52,22 @@ async def get_current_user_optional(
 
 
 async def get_current_user(
-
-    token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)
+    token: str | None = Depends(oauth2_scheme_optional),
+    token_query: str | None = Query(None, alias="token"),
+    db: AsyncSession = Depends(get_db)
 ):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    
+    active_token = token or token_query
+    if not active_token:
+        raise credentials_exception
+        
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(active_token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
         if username is None:
             raise credentials_exception
@@ -375,27 +380,7 @@ async def delete_user(
     return {"status": "success", "message": "User deleted"}
 
 
-class CasCredentialsUpdate(BaseModel):
-    cas_username: str
-    cas_password: str
 
-@router.post("/users/me/cas-credentials")
-async def update_cas_credentials(
-    data: CasCredentialsUpdate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    current_user.cas_username = data.cas_username
-    current_user.encrypted_cas_password = encrypt_password(data.cas_password)
-    await db.commit()
-    return {"status": "success", "message": "CAS credentials securely stored"}
-
-@router.get("/users/me/cas-credentials")
-async def get_cas_status(current_user: User = Depends(get_current_user)):
-    return {
-        "has_credentials": current_user.cas_username is not None,
-        "cas_username": current_user.cas_username
-    }
 
 @router.get("/users/me/student")
 async def get_my_student_profile(

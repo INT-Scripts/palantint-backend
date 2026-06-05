@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from api.routes import User, get_current_user, get_current_admin_user, get_current_user_optional
 from db.database import get_db
-from db.models import SocialLink, Student, StudentClub, RecentlyViewed
+from db.models import SocialLink, Student, StudentClub, RecentlyViewed, StudentClassGroup, ClassGroup
 
 router = APIRouter(prefix="/students", tags=["students"])
 
@@ -23,7 +23,7 @@ os.makedirs(UPLOAD_PROFILES_DIR, exist_ok=True)
 async def get_student_image(
     student_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
 ):
     student = await db.get(Student, student_id)
     if not student or not student.trombint_id:
@@ -94,11 +94,32 @@ async def get_apartment_details(
     return out
 
 
+@router.get("/filters")
+async def get_student_filters(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    promos_result = await db.execute(
+        select(Student.promo).where(Student.promo.isnot(None)).distinct()
+    )
+    ecoles_result = await db.execute(
+        select(Student.ecole).where(Student.ecole.isnot(None)).distinct()
+    )
+    
+    promos = sorted([p for p in promos_result.scalars().all() if p])
+    ecoles = sorted([e for e in ecoles_result.scalars().all() if e])
+    
+    return {"promos": promos, "ecoles": ecoles}
+
+
 @router.get("")
 async def get_students(
     skip: int = 0,
     limit: int = 24,
     q: str = None,
+    promo: str = None,
+    ecole: str = None,
+    bldg: str = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -113,8 +134,21 @@ async def get_students(
                 func.unaccent(Student.ecole).ilike(func.unaccent(f"%{q}%")),
             )
         )
+    
+    if promo:
+        query = query.where(Student.promo == promo)
+        
+    if ecole:
+        query = query.where(Student.ecole == ecole)
+        
+    if bldg:
+        bldg_digit = bldg.replace("U", "").strip()
+        if bldg_digit.isdigit():
+            query = query.where(Student.apartment.like(f"{bldg_digit}%"))
+            
     result = await db.execute(query.offset(skip).limit(limit).order_by(Student.last_name))
     return result.scalars().all()
+
 
 
 @router.get("/recent")
@@ -143,6 +177,7 @@ async def get_student(
         .options(
             selectinload(Student.social_links),
             selectinload(Student.clubs).selectinload(StudentClub.club),
+            selectinload(Student.class_groups).selectinload(StudentClassGroup.class_group),
             selectinload(Student.media),
         )
         .where(Student.id == student_id)
@@ -183,6 +218,17 @@ async def get_student(
                     "logo_url": sc.club.logo_url
                 }
             } for sc in student.clubs if sc.club
+        ],
+        "class_groups": [
+            {
+                "class_group_id": str(sg.class_group.id),
+                "class_group_name": sg.class_group.name,
+                "role": sg.role,
+                "class_group": {
+                    "id": str(sg.class_group.id),
+                    "name": sg.class_group.name
+                }
+            } for sg in student.class_groups if sg.class_group
         ],
         "media": [
             {

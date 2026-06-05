@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import or_, func, and_
 from db.database import get_db
-from db.models import Student, Club
+from db.models import Student, Club, ClassGroup
 from api.routes import User, get_current_user_optional
 
 router = APIRouter(prefix="/search", tags=["search"])
@@ -52,6 +52,7 @@ async def global_search(
                     "logo_url": c.logo_url
                 } for score, c in ranked_clubs[:5]
             ],
+            "class_groups": [],
             "apartments": []
         }
 
@@ -140,6 +141,22 @@ async def global_search(
         ranked_clubs.append((score, c))
     ranked_clubs.sort(key=lambda x: x[0], reverse=True)
 
+    # 3. SEARCH CLASS GROUPS
+    class_query = select(ClassGroup).where(
+        func.unaccent(ClassGroup.name).ilike(func.unaccent(f"%{query_clean}%"))
+    ).limit(10)
+    class_res = await db.execute(class_query)
+    classes_raw = class_res.scalars().all()
+    
+    ranked_classes = []
+    for cg in classes_raw:
+        score = 0
+        name = cg.name.lower()
+        if name == query_clean: score += 100
+        if name.startswith(query_clean): score += 50
+        ranked_classes.append((score, cg))
+    ranked_classes.sort(key=lambda x: x[0], reverse=True)
+
     return {
         "students": [
             {
@@ -157,6 +174,12 @@ async def global_search(
                 "slug": c.slug,
                 "logo_url": c.logo_url
             } for score, c in ranked_clubs[:5]
+        ],
+        "class_groups": [
+            {
+                "id": str(cg.id),
+                "name": cg.name
+            } for score, cg in ranked_classes[:5]
         ],
         "apartments": [
             {
