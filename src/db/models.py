@@ -1,10 +1,21 @@
 import uuid
-from datetime import datetime
-from typing import List, Optional, Dict, Any
+from datetime import datetime, timezone
+from typing import Dict, List, Optional
 
-from sqlalchemy import Column, DateTime, ForeignKey, String, Text, JSON, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID as PGUUID
+from sqlalchemy import (
+    JSON,
+    Column,
+    ForeignKey,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlmodel import Field, Relationship, SQLModel
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
 
 
 # ── Auth ────────────────────────────────────────────────────────────────────
@@ -15,15 +26,15 @@ class User(SQLModel, table=True):
     username: str = Field(unique=True, index=True)
     hashed_password: str
     is_admin: bool = Field(default=False)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
 
 
 class RecentlyViewed(SQLModel, table=True):
     __tablename__ = "recently_viewed"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
-    user_id: uuid.UUID = Field(sa_column=Column(PGUUID, ForeignKey("users.id", ondelete="CASCADE"), index=True))
+    user_id: uuid.UUID = Field(sa_column=Column(PG_UUID, ForeignKey("users.id", ondelete="CASCADE"), index=True))
     student_id: uuid.UUID = Field(foreign_key="students.id")
-    viewed_at: datetime = Field(default_factory=datetime.utcnow)
+    viewed_at: datetime = Field(default_factory=utc_now)
 
     user: "User" = Relationship()
     student: "Student" = Relationship()
@@ -77,7 +88,7 @@ class StudentRelationship(SQLModel, table=True):
     student_a_id: uuid.UUID = Field(foreign_key="students.id")
     student_b_id: uuid.UUID = Field(foreign_key="students.id")
     relationship_type_id: uuid.UUID = Field(foreign_key="relationship_types.id")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
 
     student_a: "Student" = Relationship(
         sa_relationship_kwargs={"primaryjoin": "StudentRelationship.student_a_id==Student.id"},
@@ -114,12 +125,12 @@ class Student(SQLModel, table=True):
     apartment: Optional[str] = Field(default=None)
 
     # Timestamps
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        sa_column_kwargs={"onupdate": datetime.utcnow}
+        default_factory=utc_now,
+        sa_column_kwargs={"onupdate": utc_now}
     )
-    last_seen_at: datetime = Field(default_factory=datetime.utcnow)
+    last_seen_at: datetime = Field(default_factory=utc_now)
 
     # Relationships
     social_links: list["SocialLink"] = Relationship(
@@ -241,7 +252,7 @@ class Media(SQLModel, table=True):
     content: Optional[str] = Field(default=None, sa_column=Column(Text))
     author_name: Optional[str] = Field(default=None)
     uploaded_by_user_id: Optional[uuid.UUID] = Field(default=None, foreign_key="users.id")
-    uploaded_at: datetime = Field(default_factory=datetime.utcnow)
+    uploaded_at: datetime = Field(default_factory=utc_now)
 
     student: "Student" = Relationship(back_populates="media")
     uploader: Optional["User"] = Relationship()

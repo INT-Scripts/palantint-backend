@@ -1,29 +1,56 @@
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from sqlalchemy import func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
-from pydantic import BaseModel
 
-from api.routes import User, get_current_user, get_current_admin_user, get_current_user_optional
+from api.private.deps import (
+    User,
+    escape_like,
+    require_admin,
+    require_user,
+    require_user_query_token,
+)
+from core.config import settings
 from db.database import get_db
-from db.models import SocialLink, Student, StudentClub, RecentlyViewed, StudentClassGroup, ClassGroup
+from db.models import (
+    RecentlyViewed,
+    SocialLink,
+    Student,
+    StudentClassGroup,
+    StudentClub,
+)
 
 router = APIRouter(prefix="/students", tags=["students"])
 
-UPLOAD_PROFILES_DIR = "/app/private_assets/profiles"
-os.makedirs(UPLOAD_PROFILES_DIR, exist_ok=True)
+UPLOAD_PROFILES_DIR = settings.PROFILES_DIR
+
+
+class SocialLinkCreate(BaseModel):
+    platform: str
+    username: str
+    url: str
+
+
+class StudentUpdate(BaseModel):
+    first_name: str | None = None
+    last_name: str | None = None
+    promo: str | None = None
+    ecole: str | None = None
+    email: str | None = None
 
 
 @router.get("/{student_id}/image")
 async def get_student_image(
     student_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_user_query_token),
 ):
     student = await db.get(Student, student_id)
     if not student or not student.trombint_id:
@@ -44,7 +71,7 @@ async def get_student_image(
 @router.get("/apartments/occupied")
 async def get_occupied_apartments(
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = Depends(get_current_user_optional),
+    current_user: User = Depends(require_user),
 ):
     result = await db.execute(
         select(
@@ -58,46 +85,20 @@ async def get_occupied_apartments(
         if apt:
             if apt not in out:
                 out[apt] = []
-            if current_user:
-                out[apt].append(
-                    {
-                        "id": str(row.id),
-                        "first_name": row.first_name,
-                        "last_name": row.last_name,
-                    }
-                )
-    return out
-
-
-@router.get("/apartments/details")
-async def get_apartment_details(
-    db: AsyncSession = Depends(get_db)
-):
-    from db.models import ApartmentDetail
-    result = await db.execute(select(ApartmentDetail))
-    details = result.scalars().all()
-    
-    out = {}
-    for d in details:
-        out[d.id] = {
-            "Logement": d.id,
-            "Bâtiment": d.building,
-            "Etage": d.floor,
-            "Type": d.type,
-            "Superficie": d.surface,
-            "Tarif": d.price,
-            "Allocation boursier": d.alloc_boursier,
-            "Allocation non boursier": d.alloc_non_boursier,
-            "_req_b": d.req_b,
-            "_req_e": d.req_e
-        }
+            out[apt].append(
+                {
+                    "id": str(row.id),
+                    "first_name": row.first_name,
+                    "last_name": row.last_name,
+                }
+            )
     return out
 
 
 @router.get("/filters")
 async def get_student_filters(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_user),
 ):
     promos_result = await db.execute(
         select(Student.promo).where(Student.promo.isnot(None)).distinct()
@@ -121,17 +122,17 @@ async def get_students(
     ecole: str = None,
     bldg: str = None,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_user),
 ):
     query = select(Student)
     if q:
-        from sqlalchemy import func, or_
+        sq = escape_like(q)
         query = query.where(
             or_(
-                func.unaccent(Student.first_name).ilike(func.unaccent(f"%{q}%")),
-                func.unaccent(Student.last_name).ilike(func.unaccent(f"%{q}%")),
-                func.unaccent(Student.promo).ilike(func.unaccent(f"%{q}%")),
-                func.unaccent(Student.ecole).ilike(func.unaccent(f"%{q}%")),
+                func.unaccent(Student.first_name).ilike(func.unaccent(f"%{sq}%")),
+                func.unaccent(Student.last_name).ilike(func.unaccent(f"%{sq}%")),
+                func.unaccent(Student.promo).ilike(func.unaccent(f"%{sq}%")),
+                func.unaccent(Student.ecole).ilike(func.unaccent(f"%{sq}%")),
             )
         )
     
@@ -150,10 +151,10 @@ async def get_students(
     return result.scalars().all()
 
 
-
 @router.get("/recent")
 async def get_recent_students(
-    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db)
 ):
     result = await db.execute(
         select(RecentlyViewed)
@@ -170,7 +171,7 @@ async def get_recent_students(
 async def get_student(
     student_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_user),
 ):
     result = await db.execute(
         select(Student)
@@ -186,7 +187,6 @@ async def get_student(
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
     
-    # MANUAL SERIALIZATION to ensure all nested objects are strictly as expected by frontend
     return {
         "id": str(student.id),
         "trombint_id": student.trombint_id,
@@ -246,7 +246,7 @@ async def get_student(
 @router.post("/{student_id}/recently-viewed")
 async def add_recently_viewed(
     student_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     student = await db.get(Student, student_id)
@@ -262,7 +262,7 @@ async def add_recently_viewed(
     rv = result.scalars().first()
 
     if rv:
-        rv.viewed_at = datetime.utcnow()
+        rv.viewed_at = datetime.now(timezone.utc)
     else:
         rv = RecentlyViewed(user_id=current_user.id, student_id=student_id)
         db.add(rv)
@@ -271,17 +271,11 @@ async def add_recently_viewed(
     return {"status": "ok"}
 
 
-class SocialLinkCreate(BaseModel):
-    platform: str
-    username: str
-    url: str
-
-
 @router.post("/{student_id}/socials")
 async def add_social_link(
     student_id: uuid.UUID,
     social: SocialLinkCreate,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     student = await db.get(Student, student_id)
@@ -304,7 +298,7 @@ async def add_social_link(
 async def delete_social_link(
     student_id: uuid.UUID,
     social_id: uuid.UUID,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     social = await db.get(SocialLink, social_id)
@@ -315,19 +309,11 @@ async def delete_social_link(
     return {"status": "ok"}
 
 
-class StudentUpdate(BaseModel):
-    first_name: str | None = None
-    last_name: str | None = None
-    promo: str | None = None
-    ecole: str | None = None
-    email: str | None = None
-
-
 @router.patch("/{student_id}")
 async def update_student(
     student_id: uuid.UUID,
     data: StudentUpdate,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     student = await db.get(Student, student_id)

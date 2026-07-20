@@ -1,23 +1,16 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
 
-from api.routes import User, get_current_admin_user, get_current_user_optional
+from api.private.deps import User, require_admin, require_user
 from db.database import get_db
 from db.models import Club, StudentClub
 
 router = APIRouter(tags=["clubs"])
-
-
-@router.get("/clubs")
-async def get_clubs(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Club))
-    return result.scalars().all()
-
-
-from pydantic import BaseModel
 
 
 class StudentClubCreate(BaseModel):
@@ -26,11 +19,16 @@ class StudentClubCreate(BaseModel):
     is_mandat: bool = False
 
 
+class StudentClubUpdate(BaseModel):
+    role: str | None = None
+    is_mandat: bool | None = None
+
+
 @router.post("/students/{student_id}/clubs")
 async def add_student_club(
     student_id: uuid.UUID,
     data: StudentClubCreate,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     sc = StudentClub(
@@ -49,7 +47,7 @@ async def add_student_club(
 async def remove_student_club(
     student_id: uuid.UUID,
     club_id: uuid.UUID,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -65,17 +63,12 @@ async def remove_student_club(
     return {"status": "removed"}
 
 
-class StudentClubUpdate(BaseModel):
-    role: str | None = None
-    is_mandat: bool | None = None
-
-
 @router.patch("/students/{student_id}/clubs/{club_id}")
 async def update_student_club(
     student_id: uuid.UUID,
     club_id: uuid.UUID,
     data: StudentClubUpdate,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -97,14 +90,11 @@ async def update_student_club(
     return sc
 
 
-from sqlalchemy.orm import selectinload
-
-
 @router.get("/clubs/{club_id}")
 async def get_club_details(
     club_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = Depends(get_current_user_optional),
+    current_user: User = Depends(require_user),
 ):
     result = await db.execute(
         select(Club)
@@ -120,8 +110,8 @@ async def get_club_details(
         raise HTTPException(status_code=404, detail="Club not found")
 
     members = []
-    if current_user:
-        for sc in club.members:
+    for sc in club.members:
+        if sc.student:
             members.append(
                 {
                     "student_id": str(sc.student.id),

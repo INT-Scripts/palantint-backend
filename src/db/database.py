@@ -1,15 +1,20 @@
 import os
 
-from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
-load_dotenv()
+from core.config import settings
 
-# Use 127.0.0.1 instead of localhost to avoid IPv6 resolution issues (Errno 111)
-DATABASE_URL = os.getenv(
-    "DATABASE_URL", "postgresql+asyncpg://postgres:password123@127.0.0.1:5432/palantint"
-)
+DATABASE_URL = settings.DATABASE_URL
+if not DATABASE_URL:
+    db_user = os.environ.get("POSTGRES_USER", "postgres")
+    db_password = os.environ.get("POSTGRES_PASSWORD", "CHANGE_ME_TO_A_STRONG_PASSWORD")
+    db_name = os.environ.get("POSTGRES_DB", "palantint")
+    db_host = os.environ.get("POSTGRES_HOST", "localhost")
+    DATABASE_URL = f"postgresql+asyncpg://{db_user}:{db_password}@{db_host}:5432/{db_name}"
+
+# Ensure it's in env for other tools that might read it directly
+os.environ["DATABASE_URL"] = DATABASE_URL
 
 # Parse DATABASE_URL to get the base connection (to default postgres DB)
 from sqlalchemy import make_url
@@ -29,11 +34,10 @@ async def get_db():
 
 async def init_db():
     # We must import models inside here to ensure they are registered with SQLModel.metadata
-    from . import models
 
     import asyncio
+
     import asyncpg
-    from sqlalchemy.exc import DBAPIError
 
     # Parse DATABASE_URL
     from sqlalchemy import make_url

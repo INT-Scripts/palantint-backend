@@ -1,18 +1,54 @@
+import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import router as auth_router
+from api.private.admin import router as admin_router
+from api.private.agenda import router as agenda_router
+
+# Auth router — mounted at root, no prefix, no auth dependency
+from api.private.auth import router as auth_router
+from api.private.class_groups import router as class_groups_router
+from api.private.clubs import router as clubs_router
+
+# Private router and dependencies
+from api.private.deps import require_user, require_user_query_token
+from api.private.graph import router as graph_router
+from api.private.maps import router as maps_router
+from api.private.media import router as media_router
+from api.private.pay5vend import router as pay5vend_router
+from api.private.relationships import router as relationships_router
+from api.private.search import router as search_router
+from api.private.students import router as students_router
+from api.private.users import router as users_router
+from api.private.assets import router as assets_router
+from api.public.class_groups import router as pub_class_groups_router
+from api.public.clubs import router as pub_clubs_router
+from api.public.laundry import router as pub_laundry_router
+from api.public.search import router as pub_search_router
+from api.public.students import router as pub_students_router
+from core.config import settings
+
+# Public router and dependencies
+from core.rate_limit import rate_limit_dep
 from db.database import init_db
+from mcp_server import mcp
+
+
+# Ensure necessary directories exist before mounting static files
+settings.ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+settings.MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+settings.PROFILES_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Execute on startup
     await init_db()
-    yield
+    async with mcp.lifespan():
+        yield
     # Execute on shutdown
 
 
@@ -26,50 +62,56 @@ app = FastAPI(
     openapi_url=None,
 )
 
+# CORS: read allowed origins from env, default to none
+_cors_origins_raw = os.getenv("CORS_ORIGINS", "")
+_cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
+# 1. Auth router (POST /auth/login) - mounted at root
 app.include_router(auth_router)
 
-from api.api_agenda import router as agenda_router
-from api.api_clubs import router as club_router
-from api.api_media import router as media_router
-from api.api_relationships import router as relationship_router
-from api.api_students import router as student_router
-from api.api_search import router as search_router
-from api.api_maps import router as maps_router
-from api.api_graph import router as graph_router
-from api.api_class_groups import router as class_group_router
+# 2. Private router (prefix /private) - requires user authentication (supports query tokens)
+private_router = APIRouter(
+    prefix="/private",
+    dependencies=[Depends(require_user_query_token)]
+)
+private_router.include_router(users_router)
+private_router.include_router(pay5vend_router)
+private_router.include_router(admin_router)
+private_router.include_router(students_router)
+private_router.include_router(clubs_router)
+private_router.include_router(agenda_router)
+private_router.include_router(relationships_router)
+private_router.include_router(media_router)
+private_router.include_router(search_router)
+private_router.include_router(maps_router)
+private_router.include_router(graph_router)
+private_router.include_router(class_groups_router)
+private_router.include_router(assets_router)
+app.include_router(private_router)
 
-from api.api_laundry import router as laundry_router
+# 3. Public router (prefix "") - rate-limited, no authentication required
+public_router = APIRouter(
+    prefix="",
+    dependencies=[Depends(rate_limit_dep)]
+)
+public_router.include_router(pub_clubs_router)
+public_router.include_router(pub_class_groups_router)
+public_router.include_router(pub_students_router)
+public_router.include_router(pub_laundry_router)
+public_router.include_router(pub_search_router)
+# Mount the public static assets folder under /public/assets
+app.mount("/assets", StaticFiles(directory=str(settings.ASSETS_DIR)), name="assets")
+app.include_router(public_router)
 
-app.include_router(student_router)
-app.include_router(relationship_router)
-app.include_router(club_router)
-app.include_router(media_router)
-app.include_router(agenda_router)
-app.include_router(search_router)
-app.include_router(maps_router)
-app.include_router(graph_router)
-app.include_router(laundry_router)
-app.include_router(class_group_router)
-
-# Mount the static assets folder
-import os
-ASSETS_DIR = "/app/assets"
-if not os.path.exists(ASSETS_DIR):
-    os.makedirs(ASSETS_DIR, exist_ok=True)
-app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
-
-SCRAPS_DIR = "/app/scraps"
-if not os.path.exists(SCRAPS_DIR):
-    os.makedirs(SCRAPS_DIR, exist_ok=True)
-app.mount("/scraps", StaticFiles(directory=SCRAPS_DIR), name="scraps")
+app.mount("/mcp", mcp.http_app(transport="sse"))
 
 
 @app.get("/")

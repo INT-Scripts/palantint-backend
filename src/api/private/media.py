@@ -8,7 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 
-from api.routes import User, get_current_admin_user, get_current_user, get_current_user_optional
+from api.private.deps import User, require_admin, require_user
+from core.config import settings
 from db.database import get_db
 from db.models import Media, Student
 
@@ -16,15 +17,16 @@ router = APIRouter(tags=["media"])
 
 # Admin configurable limit, can be loaded from DB or ENV. Set 50MB default.
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "50"))
-UPLOAD_DIR = "/app/private_assets/media"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+UPLOAD_DIR = settings.MEDIA_DIR
+
+ALLOWED_MEDIA_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp4", ".webm", ".mov"}
 
 
 @router.get("/media/{media_id}/file")
 async def serve_media_file(
     media_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_user),
 ):
     """Serve the actual media file by media ID."""
     media = await db.get(Media, media_id)
@@ -45,7 +47,7 @@ async def serve_media_file(
 async def get_student_media(
     student_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_user),
 ):
     """Get all media for a student, with uploader info."""
     result = await db.execute(
@@ -78,7 +80,7 @@ async def upload_media(
     author_name: str = Form(None),
     content: str = Form(None),  # Used if type is NOTE
     file: UploadFile = File(None),
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     student = await db.get(Student, student_id)
@@ -102,8 +104,13 @@ async def upload_media(
                 status_code=413, detail=f"File too large. Max {MAX_FILE_SIZE_MB}MB"
             )
 
-        ext = file.filename.split(".")[-1]
-        filename = f"{uuid.uuid4()}.{ext}"
+        ext = os.path.splitext(file.filename or "")[1].lower()
+        if ext not in ALLOWED_MEDIA_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File type '{ext}' not allowed. Accepted: {', '.join(sorted(ALLOWED_MEDIA_EXTENSIONS))}"
+            )
+        filename = f"{uuid.uuid4()}{ext}"
         file_path = os.path.join(UPLOAD_DIR, filename)
 
         with open(file_path, "wb") as buffer:
@@ -142,7 +149,7 @@ async def upload_media(
 @router.delete("/media/{media_id}")
 async def delete_media(
     media_id: uuid.UUID,
-    current_admin: User = Depends(get_current_admin_user),
+    current_admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     media = await db.get(Media, media_id)
@@ -150,8 +157,13 @@ async def delete_media(
         raise HTTPException(status_code=404, detail="Media not found")
 
     if media.file_path and os.path.exists(media.file_path):
-        os.remove(media.file_path)
+        try:
+            os.remove(media.file_path)
+        except OSError:
+            pass
 
     await db.delete(media)
     await db.commit()
     return {"status": "deleted"}
+
+

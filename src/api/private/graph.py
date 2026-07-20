@@ -1,33 +1,29 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy.orm import selectinload
 
+from api.private.deps import User, require_user
 from db.database import get_db
-from db.models import Student, Club, StudentClub, StudentRelationship, RelationshipType
-from api.routes import User, get_current_user
+from db.models import Club, RelationshipType, Student, StudentClub, StudentRelationship
 
 router = APIRouter(prefix="/graph", tags=["graph"])
+
 
 @router.get("")
 async def get_full_graph(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_user),
 ):
     """Returns all students, clubs, and their relationships as a graph structure."""
-    # 1. Fetch Students
     student_res = await db.execute(select(Student.id, Student.first_name, Student.last_name, Student.trombint_id, Student.profile_picture_path))
     students = student_res.all()
 
-    # 2. Fetch Clubs
     club_res = await db.execute(select(Club.id, Club.name, Club.logo_url))
     clubs = club_res.all()
 
-    # 3. Fetch Student-Club relations
     sc_res = await db.execute(select(StudentClub.student_id, StudentClub.club_id, StudentClub.role))
     student_clubs = sc_res.all()
 
-    # 4. Fetch Student-Student relations
     rel_res = await db.execute(
         select(StudentRelationship.student_a_id, StudentRelationship.student_b_id, RelationshipType.name, RelationshipType.color)
         .join(RelationshipType, StudentRelationship.relationship_type_id == RelationshipType.id)
@@ -59,7 +55,7 @@ async def get_full_graph(
             "source": str(sc.student_id),
             "target": str(sc.club_id),
             "label": sc.role,
-            "color": "#3b82f6" # default club link color
+            "color": "#3b82f6"
         })
 
     for r in relationships:

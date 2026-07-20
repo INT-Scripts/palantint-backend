@@ -1,27 +1,34 @@
+import logging
 import uuid
 from datetime import datetime, timedelta
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import or_, and_
+from pydantic import BaseModel
+from sqlalchemy import and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 
-from api.routes import User, get_current_user
+from api.private.deps import User, escape_like, require_user
 from db.database import get_db
-from db.models import AgendaEvent, Student, StudentAgendaEvent, StudentClub, StudentClassGroup, EventClassGroup
+from db.models import (
+    AgendaEvent,
+    EventClassGroup,
+    Student,
+    StudentAgendaEvent,
+    StudentClassGroup,
+)
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["agenda"])
 
-
-
-from typing import List
-from pydantic import BaseModel
 
 class CompareRequest(BaseModel):
     student_ids: List[uuid.UUID]
     start_date: str  # YYYY-MM-DD
     end_date: str    # YYYY-MM-DD
+
 
 def parse_iso_datetime(iso_str: str) -> datetime:
     """Parses ISO datetime and ensures it is naive for DB comparison."""
@@ -32,11 +39,10 @@ def parse_iso_datetime(iso_str: str) -> datetime:
         raise HTTPException(status_code=400, detail=f"Invalid ISO datetime format: {iso_str}")
 
 
-
 @router.post("/agenda/compare")
 async def compare_agendas(
     req: CompareRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Fetches agendas for multiple students and returns them grouped by student."""
@@ -48,31 +54,21 @@ async def compare_agendas(
 
         for student_id in req.student_ids:
             student = await db.get(Student, student_id)
-            if not student: continue
+            if not student:
+                continue
             
             class_group_ids_subq = select(StudentClassGroup.class_group_id).where(
                 StudentClassGroup.student_id == student_id
             )
 
-            club_ids_subq = select(StudentClub.club_id).where(
-                StudentClub.student_id == student_id
-            )
-
             stmt = (
                 select(AgendaEvent)
-                .outerjoin(
-                    StudentAgendaEvent, StudentAgendaEvent.event_id == AgendaEvent.id
-                )
-                .outerjoin(
+                .join(
                     EventClassGroup, EventClassGroup.event_id == AgendaEvent.id
                 )
                 .options(selectinload(AgendaEvent.club))
                 .where(
-                    or_(
-                        StudentAgendaEvent.student_id == student_id,
-                        AgendaEvent.club_id.in_(club_ids_subq),
-                        EventClassGroup.class_group_id.in_(class_group_ids_subq),
-                    ),
+                    EventClassGroup.class_group_id.in_(class_group_ids_subq),
                     AgendaEvent.start_time >= dt_start,
                     AgendaEvent.end_time <= dt_end,
                 )
@@ -95,28 +91,32 @@ async def compare_agendas(
             ]
 
         return results
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("compare_agendas failed")
+        raise HTTPException(status_code=500, detail="Failed to compare agendas")
+
 
 @router.get("/agenda/rooms/list")
 async def get_all_rooms(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Returns a unique list of all rooms found in the agenda database."""
     try:
-        stmt = select(AgendaEvent.room).distinct().where(AgendaEvent.room != None).order_by(AgendaEvent.room)
+        stmt = select(AgendaEvent.room).distinct().where(AgendaEvent.room.isnot(None)).order_by(AgendaEvent.room)
         result = await db.execute(stmt)
         rooms = [r for r in result.scalars().all() if r]
         return sorted(list(set(rooms)))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("get_all_rooms failed")
+        raise HTTPException(status_code=500, detail="Failed to fetch rooms")
+
 
 @router.get("/agenda/rooms/available")
 async def get_available_rooms(
     start_time: str, # ISO format
     end_time: str,   # ISO format
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Returns a list of rooms that have no events during the specified period."""
@@ -137,21 +137,24 @@ async def get_available_rooms(
         occupied_rooms = set(r for r in result.scalars().all() if r)
 
         # Get all rooms
-        all_rooms_res = await db.execute(select(AgendaEvent.room).distinct().where(AgendaEvent.room != None))
+        all_rooms_res = await db.execute(select(AgendaEvent.room).distinct().where(AgendaEvent.room.isnot(None)))
         all_rooms = set(r for r in all_rooms_res.scalars().all() if r)
 
         available = sorted(list(all_rooms - occupied_rooms))
         return available
     except Exception as e:
-        if isinstance(e, HTTPException): raise e
-        raise HTTPException(status_code=500, detail=str(e))
+        if isinstance(e, HTTPException):
+            raise e
+        logger.exception("get_available_rooms failed")
+        raise HTTPException(status_code=500, detail="Failed to check room availability")
+
 
 @router.get("/agenda/rooms/occupancy")
 async def get_room_occupancy(
     room_query: str,
     start_date: str,  # YYYY-MM-DD
     end_date: str,    # YYYY-MM-DD
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Checks occupancy for rooms matching the query string within a time range."""
@@ -160,7 +163,7 @@ async def get_room_occupancy(
         dt_end = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
 
         stmt = select(AgendaEvent).where(
-            AgendaEvent.room.ilike(f"%{room_query}%"),
+            AgendaEvent.room.ilike(f"%{escape_like(room_query)}%"),
             AgendaEvent.start_time >= dt_start,
             AgendaEvent.start_time < dt_end
         ).order_by(AgendaEvent.start_time)
@@ -179,15 +182,17 @@ async def get_room_occupancy(
             }
             for e in events
         ]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("get_room_occupancy failed")
+        raise HTTPException(status_code=500, detail="Failed to check room occupancy")
+
 
 @router.get("/students/{student_id}/agenda")
 async def get_student_agenda(
     student_id: uuid.UUID,
     start_date: str = None,  # format YYYY-MM-DD
     end_date: str = None,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     student = await db.get(Student, student_id)
@@ -212,27 +217,17 @@ async def get_student_agenda(
             StudentClassGroup.student_id == student_id
         )
 
-        # Subquery for student's clubs
-        club_ids_subq = select(StudentClub.club_id).where(
-            StudentClub.student_id == student_id
-        )
-
-        # Query events from db.database: direct course links OR club links OR class group links
         stmt = (
             select(AgendaEvent)
-            .outerjoin(
-                StudentAgendaEvent, StudentAgendaEvent.event_id == AgendaEvent.id
-            )
-            .outerjoin(
+            .join(
                 EventClassGroup, EventClassGroup.event_id == AgendaEvent.id
             )
-            .options(selectinload(AgendaEvent.club))
+            .options(
+                selectinload(AgendaEvent.club),
+                selectinload(AgendaEvent.class_groups).selectinload(EventClassGroup.class_group)
+            )
             .where(
-                or_(
-                    StudentAgendaEvent.student_id == student_id,
-                    AgendaEvent.club_id.in_(club_ids_subq),
-                    EventClassGroup.class_group_id.in_(class_group_ids_subq),
-                ),
+                EventClassGroup.class_group_id.in_(class_group_ids_subq),
                 AgendaEvent.start_time >= dt_start,
                 AgendaEvent.end_time <= dt_end,
             )
@@ -240,7 +235,7 @@ async def get_student_agenda(
         )
 
         result = await db.execute(stmt)
-        # Deduplicate using set to avoid same event twice if it somehow was manually linked + club linked
+        # Deduplicate using dict to avoid same event twice if it somehow was manually linked + club linked
         events = {e.id: e for e in result.scalars().all()}.values()
 
         return [
@@ -256,18 +251,20 @@ async def get_student_agenda(
                 "club_id": str(e.club.id) if e.club else None,
                 "club_name": e.club.name if e.club else None,
                 "club_color": e.club.color_primary if e.club else None,
+                "class_groups": [cg.class_group.name for cg in e.class_groups]
             }
             for e in events
         ]
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch agenda: {str(e)}")
+    except Exception:
+        logger.exception("get_student_agenda failed")
+        raise HTTPException(status_code=500, detail="Failed to fetch agenda")
 
 
 @router.get("/agenda/events/{event_id}")
 async def get_agenda_event_details(
     event_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
     stmt = (
@@ -275,6 +272,7 @@ async def get_agenda_event_details(
         .options(
             selectinload(AgendaEvent.students).selectinload(StudentAgendaEvent.student),
             selectinload(AgendaEvent.club),
+            selectinload(AgendaEvent.class_groups).selectinload(EventClassGroup.class_group),
         )
         .where(AgendaEvent.id == event_id)
     )
@@ -284,10 +282,25 @@ async def get_agenda_event_details(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    students = []
-    for sae in event.students:
-        s = sae.student
-        students.append(
+    # Get students from groups
+    group_ids = [ecg.class_group_id for ecg in event.class_groups]
+    group_students_stmt = (
+        select(Student)
+        .join(StudentClassGroup, StudentClassGroup.student_id == Student.id)
+        .where(StudentClassGroup.class_group_id.in_(group_ids))
+    )
+    group_students_result = await db.execute(group_students_stmt)
+    group_students = group_students_result.scalars().all()
+
+    # Get manually linked students
+    manual_students = [sae.student for sae in event.students]
+
+    # Combine and deduplicate
+    all_students_dict = {s.id: s for s in (group_students + manual_students)}
+    
+    students_data = []
+    for s in all_students_dict.values():
+        students_data.append(
             {
                 "id": str(s.id),
                 "first_name": s.first_name,
@@ -309,7 +322,8 @@ async def get_agenda_event_details(
         "club_id": str(event.club.id) if event.club else None,
         "club_name": event.club.name if event.club else None,
         "club_color": event.club.color_primary if event.club else None,
+        "class_groups": [cg.class_group.name for cg in event.class_groups],
         "students": sorted(
-            students, key=lambda x: (x["last_name"] or "", x["first_name"] or "")
+            students_data, key=lambda x: (x["last_name"] or "", x["first_name"] or "")
         ),
     }
