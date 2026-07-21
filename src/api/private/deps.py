@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import Depends, HTTPException, Query, status
+from fastapi import Depends, HTTPException, Query, status, Cookie
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,19 +58,21 @@ async def _resolve_user_from_token(
 
 async def require_user(
     token: str | None = Depends(oauth2_scheme),
+    palantint_token: str | None = Cookie(None),
     db: AsyncSession = Depends(get_db)
 ) -> User:
-    """Standard auth: Bearer header only. Formerly get_current_user."""
-    return await _resolve_user_from_token(token, db)
+    """Standard auth: Bearer header or cookie. Formerly get_current_user."""
+    return await _resolve_user_from_token(token or palantint_token, db)
 
 
 async def require_user_query_token(
     token: str | None = Depends(oauth2_scheme),
     token_query: str | None = Query(None, alias="token"),
+    palantint_token: str | None = Cookie(None),
     db: AsyncSession = Depends(get_db)
 ) -> User:
-    """Auth for <img src> endpoints: accepts Bearer header OR ?token= query param. Formerly get_current_user_with_query_token."""
-    return await _resolve_user_from_token(token or token_query, db)
+    """Auth for <img src> endpoints: accepts Bearer header OR ?token= query param OR cookie. Formerly get_current_user_with_query_token."""
+    return await _resolve_user_from_token(token or token_query or palantint_token, db)
 
 
 async def require_admin(current_user: User = Depends(require_user)) -> User:
