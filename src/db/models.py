@@ -308,6 +308,29 @@ class ApartmentDetail(SQLModel, table=True):
     req_b: int = Field(default=0)
     req_e: str = Field(default="")
 
+class LaundrySubscription(SQLModel, table=True):
+    __tablename__ = "laundry_subscriptions"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    user_id: uuid.UUID = Field(sa_column=Column(PG_UUID, ForeignKey("users.id", ondelete="CASCADE"), index=True))
+    building: str = Field(index=True)
+    machine_nbr: int = Field(index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    is_active: bool = Field(default=True, index=True)
+
+    user: "User" = Relationship()
+
+
+class Notification(SQLModel, table=True):
+    __tablename__ = "notifications"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    user_id: uuid.UUID = Field(sa_column=Column(PG_UUID, ForeignKey("users.id", ondelete="CASCADE"), index=True))
+    title: str
+    message: str
+    is_read: bool = Field(default=False, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+
+    user: "User" = Relationship()
+
 
 # Alias Base to SQLModel to avoid breaking alembic environment file expectations immediately
 Base = SQLModel

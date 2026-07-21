@@ -24,6 +24,7 @@ from api.private.search import router as search_router
 from api.private.students import router as students_router
 from api.private.users import router as users_router
 from api.private.assets import router as assets_router
+from api.private.notifications import router as notifications_router
 from api.public.class_groups import router as pub_class_groups_router
 from api.public.clubs import router as pub_clubs_router
 from api.public.laundry import router as pub_laundry_router
@@ -47,9 +48,20 @@ settings.PROFILES_DIR.mkdir(parents=True, exist_ok=True)
 async def lifespan(app: FastAPI):
     # Execute on startup
     await init_db()
+    
+    import asyncio
+    from api.private.notifications import laundry_notifier_loop
+    notifier_task = asyncio.create_task(laundry_notifier_loop())
+    
     async with mcp.lifespan():
         yield
+        
     # Execute on shutdown
+    notifier_task.cancel()
+    try:
+        await notifier_task
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(
@@ -95,6 +107,7 @@ private_router.include_router(maps_router)
 private_router.include_router(graph_router)
 private_router.include_router(class_groups_router)
 private_router.include_router(assets_router)
+private_router.include_router(notifications_router)
 app.include_router(private_router)
 
 # 3. Public router (prefix "") - rate-limited, no authentication required
