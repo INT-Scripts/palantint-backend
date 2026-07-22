@@ -5,6 +5,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    # Environment
+    ENVIRONMENT: str = "development"  # "development" | "production" | "test"
+
     # Security
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
@@ -19,7 +22,6 @@ class Settings(BaseSettings):
     DATABASE_URL: str | None = None
     
     # Storage Paths
-    # Defaulting to paths that work both in dev and in docker (via env overrides)
     APP_ROOT: Path = Path(__file__).resolve().parent.parent.parent
     DATA_ROOT: Path = Path(os.getenv("DATA_ROOT", "/app" if os.path.exists("/app") else APP_ROOT.parent / "data"))
     

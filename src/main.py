@@ -2,7 +2,6 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, Depends, FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from api.private.admin import router as admin_router
@@ -64,26 +63,16 @@ async def lifespan(app: FastAPI):
         pass
 
 
+is_dev = settings.ENVIRONMENT == "development"
+
 app = FastAPI(
     title="PalantINT API",
     version="1.0.0",
     lifespan=lifespan,
     root_path="/api",
-    docs_url=None,
-    redoc_url=None,
-    openapi_url=None,
-)
-
-# CORS: read allowed origins from env, default to none
-_cors_origins_raw = os.getenv("CORS_ORIGINS", "")
-_cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    docs_url="/docs" if is_dev else None,
+    redoc_url="/redoc" if is_dev else None,
+    openapi_url="/openapi.json" if is_dev else None,
 )
 
 # 1. Auth router (POST /auth/login) - mounted at root

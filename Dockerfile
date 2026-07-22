@@ -15,6 +15,8 @@ COPY . .
 # Complete the sync to install the backend package
 RUN uv sync --frozen
 
+ENV ENVIRONMENT=development
+
 EXPOSE 3000
 
 CMD ["/app/.venv/bin/fastapi", "dev", "src/main.py", "--host", "0.0.0.0", "--port", "3000", "--proxy-headers"]
@@ -45,6 +47,8 @@ WORKDIR /app
 
 # Copy only built/synced artifacts from builder stage
 COPY --from=builder /app /app
+
+ENV ENVIRONMENT=production
 
 EXPOSE 3000
 
