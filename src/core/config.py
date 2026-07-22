@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"  # "development" | "production" | "test"
 
     # Security
-    SECRET_KEY: str
+    SECRET_KEY: str = "dev_secret_key_change_in_production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 5
     REFRESH_TOKEN_EXPIRE_MINUTES: int = 60
@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     PROFILES_DIR: Path = PRIVATE_ASSETS_DIR / "profiles"
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=[str(Path(__file__).resolve().parent.parent.parent / ".env"), ".env"],
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore"

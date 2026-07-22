@@ -27,6 +27,7 @@ from api.private.notifications import router as notifications_router
 from api.public.class_groups import router as pub_class_groups_router
 from api.public.clubs import router as pub_clubs_router
 from api.public.laundry import router as pub_laundry_router
+from api.public.maps import router as pub_maps_router
 from api.public.search import router as pub_search_router
 from api.public.students import router as pub_students_router
 from core.config import settings
@@ -109,6 +110,7 @@ public_router.include_router(pub_class_groups_router)
 public_router.include_router(pub_students_router)
 public_router.include_router(pub_laundry_router)
 public_router.include_router(pub_search_router)
+public_router.include_router(pub_maps_router)
 # Mount the public static assets folder under /public/assets
 app.mount("/assets", StaticFiles(directory=str(settings.ASSETS_DIR)), name="assets")
 app.include_router(public_router)
