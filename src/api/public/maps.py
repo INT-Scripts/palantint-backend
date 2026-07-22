@@ -20,6 +20,7 @@ class MapMetadataSchema(BaseModel):
 
 
 BUILDING_FLOORS: Dict[str, List[str]] = {
+    "Foyer": ["0", "1"],
     "U1": ["0", "1", "2", "3", "4", "5"],
     "U2": ["1", "2", "3", "4", "5"],
     "U3": ["0", "1", "2"],

@@ -201,6 +201,7 @@ class Club(SQLModel, table=True):
     association_of_origin: Optional[str] = Field(default=None)     # e.g. "BDE", "BDA", "ASINT"
     color_primary: Optional[str] = Field(default=None)
     color_secondary: Optional[str] = Field(default=None)
+    foyer_room: Optional[str] = Field(default=None)
 
     members: list["StudentClub"] = Relationship(
         back_populates="club",
