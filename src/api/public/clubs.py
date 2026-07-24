@@ -13,7 +13,7 @@ from db.models import Club
 
 router = APIRouter(tags=["clubs"])
 
-DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../data/scraps"))
+DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../data/scraps/auto"))
 
 
 @router.get("/clubs")

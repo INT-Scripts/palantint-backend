@@ -25,6 +25,7 @@ from db.models import (
     Student,
     StudentClassGroup,
     StudentClub,
+    utc_now,
 )
 
 router = APIRouter(prefix="/students", tags=["students"])
@@ -262,7 +263,7 @@ async def add_recently_viewed(
     rv = result.scalars().first()
 
     if rv:
-        rv.viewed_at = datetime.now(timezone.utc)
+        rv.viewed_at = utc_now()
     else:
         rv = RecentlyViewed(user_id=current_user.id, student_id=student_id)
         db.add(rv)

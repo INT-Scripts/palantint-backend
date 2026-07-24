@@ -11,7 +11,9 @@ from sqlalchemy.future import select
 
 from api.private.deps import User, require_admin, require_user
 from db.database import get_db
-from db.models import MapMetadata
+from db.models import MapMetadata, ThreeDConfig
+
+from core.config import settings
 
 router = APIRouter(prefix="/maps", tags=["maps"])
 
@@ -80,26 +82,61 @@ async def save_map_metadata(
 
 @router.get("/3d-config", response_model=ThreeDConfigSchema)
 async def get_3d_config(
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_user)
 ):
-    """Returns the configuration for 3D tile mappings and markers."""
-    config_path = "/app/assets/3d/config.json"
-    if os.path.exists(config_path):
-        with open(config_path, 'r') as f:
+    """Returns the configuration for 3D tile mappings and markers from DB or vault file."""
+    stmt = select(ThreeDConfig).where(ThreeDConfig.key == "default")
+    res = await db.execute(stmt)
+    cfg = res.scalars().first()
+    if cfg and (cfg.tile_mappings or cfg.markers):
+        return ThreeDConfigSchema(
+            tile_mappings=cfg.tile_mappings,
+            markers=cfg.markers
+        )
+
+    # Fallback to vault file
+    export_path = settings.DATA_ROOT / "exports" / "3d_config.json"
+    if os.path.exists(export_path):
+        with open(export_path, 'r', encoding='utf-8') as f:
             return ThreeDConfigSchema(**json.load(f))
+
+    config_path = settings.ASSETS_DIR / "3d" / "config.json"
+    if os.path.exists(config_path):
+        with open(config_path, 'r', encoding='utf-8') as f:
+            return ThreeDConfigSchema(**json.load(f))
+
     return ThreeDConfigSchema()
 
 
 @router.post("/3d-config")
 async def save_3d_config(
     config: ThreeDConfigSchema,
+    db: AsyncSession = Depends(get_db),
     current_admin: User = Depends(require_admin)
 ):
-    """Saves the configuration for 3D tile mappings and markers."""
-    config_path = "/app/assets/3d/config.json"
-    os.makedirs(os.path.dirname(config_path), exist_ok=True)
-    with open(config_path, 'w') as f:
-        json.dump(config.model_dump(), f, indent=4)
+    """Saves the configuration for 3D tile mappings and markers to DB and vault."""
+    stmt = select(ThreeDConfig).where(ThreeDConfig.key == "default")
+    res = await db.execute(stmt)
+    cfg = res.scalars().first()
+    if not cfg:
+        cfg = ThreeDConfig(
+            key="default",
+            tile_mappings=config.tile_mappings,
+            markers=config.markers
+        )
+        db.add(cfg)
+    else:
+        cfg.tile_mappings = config.tile_mappings
+        cfg.markers = config.markers
+
+    await db.commit()
+
+    export_dir = settings.DATA_ROOT / "exports"
+    os.makedirs(export_dir, exist_ok=True)
+    with open(export_dir / "3d_config.json", 'w', encoding='utf-8') as f:
+        json.dump(config.model_dump(), f, indent=4, ensure_ascii=False)
+
     return {"status": "success"}
 
 
@@ -108,7 +145,7 @@ async def get_3d_tiles(
     current_user: User = Depends(require_user)
 ):
     """Returns a list of available 3D tile GLTF files."""
-    tiles_dir = "/app/assets/3d"
+    tiles_dir = settings.ASSETS_DIR / "3d"
     if not os.path.exists(tiles_dir):
         return {"tiles": []}
     
@@ -139,7 +176,7 @@ async def serve_3d_tile_file(
     if ext.lower() not in allowed_extensions:
         raise HTTPException(status_code=400, detail="Forbidden file extension")
 
-    tiles_dir = "/app/assets/3d"
+    tiles_dir = settings.ASSETS_DIR / "3d"
     file_path = os.path.join(tiles_dir, filename)
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")

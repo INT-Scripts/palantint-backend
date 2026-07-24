@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import (
     JSON,
@@ -14,7 +14,7 @@ from sqlmodel import Field, Relationship, SQLModel
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 
@@ -26,6 +26,8 @@ class User(SQLModel, table=True):
     username: str = Field(unique=True, index=True)
     hashed_password: str
     is_admin: bool = Field(default=False)
+    cas_username: Optional[str] = Field(default=None)
+    cas_password: Optional[str] = Field(default=None)
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -282,6 +284,15 @@ class AgendaEvent(SQLModel, table=True):
         back_populates="event",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"}
     )
+
+
+class ThreeDConfig(SQLModel, table=True):
+    __tablename__ = "three_d_config"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    key: str = Field(default="default", unique=True, index=True)
+    tile_mappings: Dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))
+    markers: List[Dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    updated_at: datetime = Field(default_factory=utc_now)
 
 
 class MapMetadata(SQLModel, table=True):
