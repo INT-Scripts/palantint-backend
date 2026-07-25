@@ -16,10 +16,11 @@ COPY . .
 RUN uv sync --frozen
 
 ENV ENVIRONMENT=development
+ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 3000
 
-CMD ["/app/.venv/bin/fastapi", "dev", "src/main.py", "--host", "0.0.0.0", "--port", "3000", "--proxy-headers"]
+CMD ["fastapi", "dev", "src/main.py", "--host", "0.0.0.0", "--port", "3000", "--proxy-headers"]
 
 
 # Stage 2: Builder (Production dependency builder)
@@ -49,7 +50,8 @@ WORKDIR /app
 COPY --from=builder /app /app
 
 ENV ENVIRONMENT=production
+ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 3000
 
-CMD ["/app/.venv/bin/fastapi", "run", "src/main.py", "--host", "0.0.0.0", "--port", "3000", "--proxy-headers"]
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "3000", "--proxy-headers"]
