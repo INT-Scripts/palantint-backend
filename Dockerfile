@@ -1,7 +1,10 @@
 # Stage 1: Development
-FROM ghcr.io/astral-sh/uv:alpine AS development
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS development
 
 WORKDIR /app
+
+ENV UV_COMPILE_BYTECODE=1
+ENV UV_LINK_MODE=copy
 
 # Copy dependency definition files
 COPY pyproject.toml uv.lock ./
@@ -24,9 +27,12 @@ CMD ["fastapi", "dev", "src/main.py", "--host", "0.0.0.0", "--port", "3000", "--
 
 
 # Stage 2: Builder (Production dependency builder)
-FROM ghcr.io/astral-sh/uv:alpine AS builder
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS builder
 
 WORKDIR /app
+
+ENV UV_COMPILE_BYTECODE=1
+ENV UV_LINK_MODE=copy
 
 # Copy dependency definition files
 COPY pyproject.toml uv.lock ./
@@ -42,7 +48,7 @@ RUN uv sync --frozen --no-cache --no-dev
 
 
 # Stage 3: Production (Minimal runner)
-FROM ghcr.io/astral-sh/uv:alpine AS production
+FROM python:3.13-slim-bookworm AS production
 
 WORKDIR /app
 
