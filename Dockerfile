@@ -1,62 +1,64 @@
-# Stage 1: Development
-FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS development
+# Stage 1: Base image with uv
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS base
 
 WORKDIR /app
 
-ENV UV_COMPILE_BYTECODE=1
-ENV UV_LINK_MODE=copy
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    PYTHONUNBUFFERED=1 \
+    PATH="/app/.venv/bin:$PATH"
 
-# Copy dependency definition files
+
+# Stage 2: Development stage
+FROM base AS development
+
+# Copy dependency specifications and install dependencies with cache mount
 COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project
 
-# Sync dependencies (frozen ensures uv.lock is used) without installing the project itself
-RUN uv sync --frozen --no-install-project
-
-# Copy the rest of the backend files (including README.md, src, etc.)
+# Copy backend source files
 COPY . .
 
-# Complete the sync to install the backend package
-RUN uv sync --frozen
+# Install project package into virtualenv
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen
 
 ENV ENVIRONMENT=development
-ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 3000
 
-CMD ["fastapi", "dev", "src/main.py", "--host", "0.0.0.0", "--port", "3000", "--proxy-headers"]
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "3000", "--proxy-headers", "--reload"]
 
 
-# Stage 2: Builder (Production dependency builder)
-FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS builder
+# Stage 3: Builder (Production dependency builder)
+FROM base AS builder
 
-WORKDIR /app
-
-ENV UV_COMPILE_BYTECODE=1
-ENV UV_LINK_MODE=copy
-
-# Copy dependency definition files
 COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
 
-# Sync dependencies in production mode (no-dev, no-cache) without installing the project itself
-RUN uv sync --frozen --no-cache --no-dev --no-install-project
-
-# Copy the rest of the backend files
 COPY . .
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
 
-# Complete the sync to install the backend package in production mode
-RUN uv sync --frozen --no-cache --no-dev
 
-
-# Stage 3: Production (Minimal runner)
+# Stage 4: Production (Minimal non-root runner)
 FROM python:3.13-slim-bookworm AS production
 
 WORKDIR /app
 
-# Copy only built/synced artifacts from builder stage
-COPY --from=builder /app /app
+ENV ENVIRONMENT=production \
+    PYTHONUNBUFFERED=1 \
+    PATH="/app/.venv/bin:$PATH"
 
-ENV ENVIRONMENT=production
-ENV PATH="/app/.venv/bin:$PATH"
+# Create non-root user for enhanced security
+RUN groupadd -g 10001 appgroup && \
+    useradd -u 10001 -g appgroup -s /bin/sh appuser
+
+COPY --chown=appuser:appuser --from=builder /app /app
+
+USER appuser
 
 EXPOSE 3000
 
