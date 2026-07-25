@@ -20,8 +20,15 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    op.drop_column('users', 'cas_username')
-    op.drop_column('users', 'encrypted_cas_password')
+    from sqlalchemy.engine.reflection import Inspector
+    bind = op.get_bind()
+    inspector = Inspector.from_engine(bind)
+    columns = [col['name'] for col in inspector.get_columns('users')]
+
+    if 'cas_username' in columns:
+        op.drop_column('users', 'cas_username')
+    if 'encrypted_cas_password' in columns:
+        op.drop_column('users', 'encrypted_cas_password')
 
 
 def downgrade() -> None:
