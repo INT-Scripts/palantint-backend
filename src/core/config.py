@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     
     # Database
     DATABASE_URL: str | None = None
+    POSTGRES_USER: str = "postgres"
+    POSTGRES_PASSWORD: str = "CHANGE_ME_TO_A_STRONG_PASSWORD"
+    POSTGRES_DB: str = "palantint"
+    POSTGRES_HOST: str = "localhost"
     
     # Storage Paths
     APP_ROOT: Path = Path(__file__).resolve().parent.parent.parent
@@ -28,11 +32,16 @@ class Settings(BaseSettings):
     ASSETS_DIR: Path = DATA_ROOT / "assets"
     PRIVATE_ASSETS_DIR: Path = DATA_ROOT / "private_assets"
     
+    # Media & Profiles
     MEDIA_DIR: Path = PRIVATE_ASSETS_DIR / "media"
     PROFILES_DIR: Path = PRIVATE_ASSETS_DIR / "profiles"
 
     model_config = SettingsConfigDict(
-        env_file=[str(Path(__file__).resolve().parent.parent.parent / ".env"), ".env"],
+        env_file=[
+            str(Path(__file__).resolve().parent.parent.parent.parent / ".env"),
+            str(Path(__file__).resolve().parent.parent.parent / ".env"),
+            ".env"
+        ],
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore"

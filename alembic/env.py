@@ -21,6 +21,7 @@ import sys
 # add your model's MetaData object here
 # for 'autogenerate' support
 from db.models import SQLModel
+from db.database import DATABASE_URL
 target_metadata = SQLModel.metadata
 
 # other values from the config, defined by the needs of env.py,

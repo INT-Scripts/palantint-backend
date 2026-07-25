@@ -7,10 +7,10 @@ from core.config import settings
 
 DATABASE_URL = settings.DATABASE_URL
 if not DATABASE_URL:
-    db_user = os.environ.get("POSTGRES_USER", "postgres")
-    db_password = os.environ.get("POSTGRES_PASSWORD", "CHANGE_ME_TO_A_STRONG_PASSWORD")
-    db_name = os.environ.get("POSTGRES_DB", "palantint")
-    db_host = os.environ.get("POSTGRES_HOST", "localhost")
+    db_user = settings.POSTGRES_USER
+    db_password = settings.POSTGRES_PASSWORD
+    db_name = settings.POSTGRES_DB
+    db_host = settings.POSTGRES_HOST
     DATABASE_URL = f"postgresql+asyncpg://{db_user}:{db_password}@{db_host}:5432/{db_name}"
 
 # Ensure it's in env for other tools that might read it directly
