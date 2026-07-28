@@ -9,7 +9,7 @@ from sqlalchemy.future import select
 
 from core.auth import create_access_token, create_refresh_token, verify_password
 from core.config import settings
-from core.rate_limit import get_client_ip, login_limiter
+from core.rate_limit import get_client_ip, login_limiter, refresh_limiter
 from db.database import get_db
 from db.models import User
 
@@ -58,9 +58,12 @@ async def login_for_access_token(
 
 @router.post("/auth/refresh")
 async def refresh_tokens(
+    request: Request,
     data: RefreshRequest,
     db: AsyncSession = Depends(get_db)
 ):
+    # Rate limit refresh attempts (5 per minute per IP), same policy as login
+    refresh_limiter.check(get_client_ip(request))
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate refresh credentials",

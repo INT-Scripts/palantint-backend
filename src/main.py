@@ -35,6 +35,7 @@ from core.config import settings
 # Public router and dependencies
 from core.rate_limit import rate_limit_dep
 from db.database import init_db
+from mcp_server import client as mcp_client
 from mcp_server import mcp
 
 
@@ -62,6 +63,7 @@ async def lifespan(app: FastAPI):
         await notifier_task
     except asyncio.CancelledError:
         pass
+    await mcp_client.aclose()
 
 
 is_dev = settings.ENVIRONMENT == "development"

@@ -39,8 +39,18 @@ class _RateLimiter:
 login_limiter = _RateLimiter(max_requests=5, window_seconds=60)
 
 
+# Singleton: 5 refresh-token exchanges per minute per IP
+refresh_limiter = _RateLimiter(max_requests=5, window_seconds=60)
+
+
 # Singleton: 60 requests per minute per IP for general API
 api_limiter = _RateLimiter(max_requests=60, window_seconds=60)
+
+
+# Singleton: 20 MCP bearer-token verifications per minute per IP.
+# Same purpose as login_limiter (bound credential-guessing attempts),
+# scaled up since legitimate MCP clients reconnect/retry more often than login forms.
+mcp_auth_limiter = _RateLimiter(max_requests=20, window_seconds=60)
 
 
 def get_client_ip(request: Request) -> str:

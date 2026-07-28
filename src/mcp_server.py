@@ -1,49 +1,113 @@
+import asyncio
 import logging
+import secrets
 from collections import deque
 from datetime import datetime
 from typing import Any, Dict, Optional
 
 import httpx
+from fastapi import HTTPException
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
+from fastmcp.server.auth import AccessToken, TokenVerifier
+from fastmcp.server.dependencies import get_http_request
 
 from core.config import settings
+from core.rate_limit import get_client_ip, mcp_auth_limiter
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("mcp")
-logger.setLevel(logging.DEBUG)
 
 # Configuration from settings
 MCP_SERVICE_TOKEN = settings.MCP_SERVICE_TOKEN
 
-mcp = FastMCP("PalantINT")
+
+class ServiceTokenVerifier(TokenVerifier):
+    """Grants access to MCP clients that present MCP_SERVICE_TOKEN as their bearer token.
+
+    This is the same shared secret the MCP server uses to authenticate itself to the
+    private API (see api/private/deps.py) — it does not carry per-client identity, it
+    simply gates access to the /mcp endpoint itself, which is otherwise unauthenticated.
+
+    Verification attempts are throttled via the same core.rate_limit machinery used by
+    every other credential-checking endpoint in the app (login, refresh), keyed by client IP.
+    """
+
+    def __init__(self, expected_token: str):
+        super().__init__()
+        self._expected_token = expected_token
+
+    async def verify_token(self, token: str) -> Optional[AccessToken]:
+        try:
+            mcp_auth_limiter.check(get_client_ip(get_http_request()))
+        except RuntimeError:
+            # No HTTP request in context (e.g. non-HTTP transport) — nothing to key on.
+            pass
+        except HTTPException:
+            # verify_token runs inside Starlette's AuthenticationMiddleware, outside
+            # FastAPI's exception-handling layer, so a raised HTTPException would
+            # surface as a raw 500 rather than 429. Deny instead: this reuses the
+            # same 401 "invalid_token" response an ordinary bad token gets, so a
+            # rate-limited caller learns nothing beyond "not authenticated".
+            logger.warning("MCP auth rate limit exceeded, denying token verification.")
+            return None
+
+        if not secrets.compare_digest(token, self._expected_token):
+            return None
+        return AccessToken(token=token, client_id="mcp-service", scopes=[])
+
+
+if not MCP_SERVICE_TOKEN:
+    logger.warning(
+        "MCP_SERVICE_TOKEN is not set — the /mcp endpoint will run WITHOUT authentication."
+    )
+
+mcp = FastMCP(
+    "PalantINT",
+    auth=ServiceTokenVerifier(MCP_SERVICE_TOKEN) if MCP_SERVICE_TOKEN else None,
+)
 mcp._mcp_server.name = "PalantINT"
 
 
 class PalantINTClient:
+    """Thin wrapper around the PalantINT private API, reusing a single
+    pooled connection instead of opening a new one per request."""
+
     def __init__(self, base_url: str):
         self.base_url = base_url.rstrip("/")
+        headers = (
+            {"Authorization": f"Bearer {MCP_SERVICE_TOKEN}"}
+            if MCP_SERVICE_TOKEN
+            else {}
+        )
+        self._http = httpx.AsyncClient(
+            base_url=self.base_url, headers=headers, timeout=30.0
+        )
 
-    async def get_headers(self):
-        if not MCP_SERVICE_TOKEN:
-            return {}
-        return {"Authorization": f"Bearer {MCP_SERVICE_TOKEN}"}
+    async def aclose(self):
+        await self._http.aclose()
+
+    async def _request(self, method: str, endpoint: str, **kwargs):
+        url = f"/{endpoint.lstrip('/')}"
+        try:
+            response = await self._http.request(method, url, **kwargs)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            logger.warning("PalantINT API error on %s %s: %s", method, url, e)
+            raise ToolError(
+                f"PalantINT API returned an error ({e.response.status_code}) for {endpoint}."
+            ) from e
+        except httpx.RequestError as e:
+            logger.error("PalantINT API unreachable on %s %s: %s", method, url, e)
+            raise ToolError(
+                "Could not reach the PalantINT API. It may be down or unreachable."
+            ) from e
 
     async def get(self, endpoint: str, params: Optional[Dict[str, Any]] = None):
-        headers = await self.get_headers()
-        async with httpx.AsyncClient(headers=headers, timeout=30.0) as client:
-            url = f"{self.base_url}/{endpoint.lstrip('/')}"
-            response = await client.get(url, params=params)
-            response.raise_for_status()
-            return response.json()
+        return await self._request("GET", endpoint, params=params)
 
     async def post(self, endpoint: str, json: Optional[Dict[str, Any]] = None):
-        headers = await self.get_headers()
-        async with httpx.AsyncClient(headers=headers, timeout=30.0) as client:
-            url = f"{self.base_url}/{endpoint.lstrip('/')}"
-            response = await client.post(url, json=json)
-            response.raise_for_status()
-            return response.json()
+        return await self._request("POST", endpoint, json=json)
 
     async def find_student_id(self, trombint_id: str) -> Optional[str]:
         """Convert a TrombintID (string) to a UUID (string)."""
@@ -66,47 +130,131 @@ def tool_guide():
     return """
 # PalantINT Tool Usage Guide
 
-Use these tools to answer questions about campus life, people, and buildings.
+Use these tools to answer questions about campus life, people, clubs, and buildings.
 
-## People & Social
-1. **Identify**: Use `search_directory(query)` to find a person's `trombint_id`.
-2. **Profile**: Use `get_student_profile(trombint_id)` for basic identity.
-3. **Relationships**: Use `get_student_relationships(trombint_id)` to find friends and roommates.
-4. **Socials**: Use `get_student_socials(trombint_id)` for social media handles (LinkedIn, GitHub, etc.).
-5. **Notes**: Use `get_student_notes(trombint_id)` to see what people say about them.
-6. **Pathfinding**: Use `find_shortest_path(trombint_id_1, trombint_id_2)` to discover how 2 students are connected.
+Almost every tool takes a `trombint_id` (a short student identifier), never a name or a UUID
+directly. Always resolve names to a `trombint_id` via `search_directory` first — do not guess one.
+
+## People & Directory
+1. **Identify / free-text search**: `search_directory(query)` — fuzzy-matches students, clubs, and
+   class groups by name, TrombintID, or apartment (e.g. `search_directory(query="jdupont")`).
+2. **Browse / filter**: `search_directory(promo=..., ecole=..., building=...)` — list students by
+   exact promo, école, or building (e.g. building='7' for U7), optionally combined with `query`.
+   Use this instead of `search_directory(query=...)` when you know the criteria but not a name
+   (e.g. "who lives in building 7", "list of TSP first-years"). Results are capped by `limit`
+   (default 25); a truncation note tells you when to narrow the filters or raise `limit`.
+3. **Profile**: `get_student_profile(trombint_id)` — name, promo, school, email, clubs.
+4. **Relationships**: `get_student_relationships(trombint_id)` — friends, partners, roommates.
+5. **Socials**: `get_student_socials(trombint_id)` — LinkedIn, GitHub, Discord, Instagram, etc.
+6. **Notes**: `get_student_notes(trombint_id)` — quotes/notes other students left about them.
+7. **Pathfinding**: `find_shortest_path(trombint_id_1, trombint_id_2)` — shortest chain of
+   relationships/roommates/shared clubs connecting two students, with degrees of separation.
+8. **Relationship taxonomy**: `list_relationship_types()` — the valid relationship categories
+   (friend, roommate, partner, etc.) that appear in `get_student_relationships` output.
 
 ## Clubs & Academics
-- **Club Info**: Use `get_club_info(query)` for club description, office, and links.
-- **Club Members**: Use `list_club_members(query)` to view club officers and members.
-- **Class Roster**: Use `get_class_roster(query)` to view students in a class or promo group.
+- **Club info**: `get_club_info(query)` — description, association, foyer room, links, upcoming
+  events. Matches the first club found for `query`; if the query is ambiguous (e.g. an acronym
+  matching multiple clubs), mention that to the user and suggest a more specific query.
+- **Club members**: `list_club_members(query)` — executive board (mandat) and regular members.
+  Same first-match caveat as `get_club_info`.
+- **Class roster**: `get_class_roster(query)` — students in a class or promo group
+  (e.g. 'TSP_INF1', 'IMT_L3'); matches by substring against the class group name.
 
 ## Housing & Location
-- **Specs**: Use `get_apartment_info(apartment_id)` (e.g., '7413') to see room size and price.
-- **Occupants**: Use `list_roommates(trombint_id)` to find who lives with someone.
-- **Where Is Student**: Use `where_is_student(trombint_id, datetime_str)` to infer current location (classroom or apartment).
+- **Apartment specs**: `get_apartment_info(apartment_id)` (e.g. '7413') — size, price, floor,
+  scholarship allocation.
+- **Roommates**: `list_roommates(trombint_id)` — who else lives in the same apartment.
+- **Where is student**: `where_is_student(trombint_id, datetime_str)` — infers current location
+  (classroom from schedule, or home apartment) at a given ISO datetime, e.g.
+  `datetime_str="2026-07-28T14:30:00"`. Omit `datetime_str` to use the current time.
+- **Buildings**: `get_map_location(query)` — lists residential buildings and their floors
+  (e.g. `query="U3"`). Does not cover individual rooms or classrooms — use the Rooms tools below,
+  or `where_is_student`/`get_student_profile` for a specific student's apartment.
+
+## Rooms & Availability
+- **List rooms**: `list_rooms()` — every room name that appears in the class schedule, useful to
+  disambiguate a room name before using the tools below.
+- **Free rooms**: `find_available_rooms(start_time, end_time)` — rooms with no class scheduled
+  in a given ISO datetime window, e.g. "is any room free at 3pm today".
+- **Room schedule**: `get_room_schedule(room_query, start_date, end_date)` — what's scheduled in
+  a room (substring match) over a `YYYY-MM-DD` date range.
 
 ## Schedule & Availability
-- **Today**: Use `get_student_schedule(trombint_id)` to see their classes today.
-- **Find Time**: Use `find_common_free_slots(trombint_ids, date)` to coordinate meetings across students.
+- **Daily schedule**: `get_student_schedule(trombint_id, date)` — classes on a given day; `date`
+  is `YYYY-MM-DD` (e.g. `date="2026-07-28"`), defaults to today.
+- **Find common time**: `find_common_free_slots(trombint_ids, date)` — common free windows
+  (08:00–20:00) across multiple students on one `YYYY-MM-DD` date, for scheduling meetings.
 
 ## Campus Status
-- **Laundry**: Use `get_laundry_status()` for machine availability.
-- **Map**: Use `get_map_location(query)` to find any room or student's home.
+- **Laundry**: `get_laundry_status()` — real-time washer/dryer availability.
+
+## Tips
+- If a tool reports "not found", double-check the `trombint_id` via `search_directory` rather than
+  retrying with a guessed ID.
+- Dates and datetimes must be ISO formatted (`YYYY-MM-DD` / `YYYY-MM-DDTHH:MM:SS`); anything else
+  will be rejected.
 """
 
 
 @mcp.tool()
-async def search_directory(query: str):
+async def search_directory(
+    query: Optional[str] = None,
+    promo: Optional[str] = None,
+    ecole: Optional[str] = None,
+    building: Optional[str] = None,
+    limit: int = 25,
+):
     """
-    Search the directory for students or clubs. Returns IDs/Slugs for further lookup.
+    Search or browse the directory for students and clubs. Returns IDs/Slugs for further lookup.
+
+    - **Free-text lookup**: pass only `query` (a name, TrombintID, or apartment, e.g. 'jdupont')
+      to fuzzy-search students, clubs, and class groups by relevance.
+    - **Filtered browsing**: pass `promo` (e.g. 'Ingénieur 1ère année'), `ecole` (e.g. 'Télécom SudParis'),
+      and/or `building` (e.g. '7' for building U7) to list students matching those exact criteria —
+      use this for questions like "who's in TSP_INF2" or "students in building 7" instead of guessing
+      a search term. `query` can be combined with these filters to narrow further by name.
+
+    `limit` caps how many students are returned (default 25, max 50) to avoid flooding the response.
     """
+    limit = max(1, min(limit, 50))
+
+    if promo or ecole or building:
+        params: Dict[str, Any] = {"limit": limit}
+        if query:
+            params["q"] = query
+        if promo:
+            params["promo"] = promo
+        if ecole:
+            params["ecole"] = ecole
+        if building:
+            params["bldg"] = building
+
+        students = await client.get("/students", params=params)
+        if not students:
+            return f"No students found matching promo={promo!r}, ecole={ecole!r}, building={building!r}, query={query!r}."
+
+        output = [f"### Students Found ({len(students)}{'+' if len(students) == limit else ''})"]
+        for s in students:
+            output.append(
+                f"- {s['first_name']} {s['last_name']} (TrombintID: {s['trombint_id']}, "
+                f"Promo: {s.get('promo') or 'N/A'}, School: {s.get('ecole') or 'N/A'}, "
+                f"Apt: {s.get('apartment') or 'N/A'})"
+            )
+        if len(students) == limit:
+            output.append("\n_Results were truncated — narrow your filters or raise `limit` for more._")
+        return "\n".join(output)
+
+    if not query:
+        return "Please provide a `query`, or at least one of `promo`/`ecole`/`building` to browse."
+
     data = await client.get("/search", params={"q": query})
 
     output = []
-    if data.get("students"):
-        output.append("### Students Found")
-        for s in data["students"]:
+    students = data.get("students", [])[:limit]
+    if students:
+        output.append(f"### Students Found ({len(students)})")
+        for s in students:
             output.append(
                 f"- {s['first_name']} {s['last_name']} (TrombintID: {s['trombint_id']}, Apt: {s['apartment'] or 'N/A'})"
             )
@@ -115,6 +263,11 @@ async def search_directory(query: str):
         output.append("\n### Clubs Found")
         for c in data["clubs"]:
             output.append(f"- {c['name']} (Slug: {c['slug']})")
+
+    if data.get("class_groups"):
+        output.append("\n### Class Groups Found")
+        for cg in data["class_groups"]:
+            output.append(f"- {cg['name']}")
 
     return "\n".join(output) if output else f"No results found for '{query}'."
 
@@ -393,11 +546,12 @@ async def find_common_free_slots(
         return "Please provide at least one student TrombintID."
 
     target_date = date or datetime.now().strftime("%Y-%m-%d")
+
+    resolved = await asyncio.gather(*(client.find_student_id(tid) for tid in trombint_ids))
+
     student_ids = []
     found_map = {}
-
-    for tid in trombint_ids:
-        sid = await client.find_student_id(tid)
+    for tid, sid in zip(trombint_ids, resolved):
         if sid:
             student_ids.append(sid)
             found_map[sid] = tid
@@ -482,7 +636,7 @@ async def find_shortest_path(trombint_id_1: str, trombint_id_2: str):
     if sid1 == sid2:
         return "Both arguments refer to the same student."
 
-    graph = await client.get("/private/graph") if client.base_url.endswith("/api") else await client.get("/graph")
+    graph = await client.get("/graph")
     nodes = {n["id"]: n for n in graph.get("nodes", [])}
 
     # Build adjacency list: node_id -> list of (neighbor_id, edge_label)
@@ -641,23 +795,86 @@ async def get_laundry_status():
 
 
 @mcp.tool()
-async def get_map_location(query: str):
+async def get_map_location(query: Optional[str] = None):
     """
-    Find coordinates or building/floor for a room or student.
-    """
-    data = await client.get("/maps/search", params={"q": query})
-    if not data:
-        return f"No location found for '{query}'."
+    List campus residential buildings and their floors. Pass `query` (e.g. 'U3') to filter
+    to a single building; omit it to list all buildings.
 
-    res = []
-    for item in data:
-        res.append(
-            f"- {item['name']} ({item['type']}) - Building {item.get('building', 'N/A')}, Floor {item['floor']}"
-        )
+    For a specific student's apartment, use `get_student_profile` or `where_is_student` instead —
+    this tool only covers building/floor structure, not individual rooms or occupants.
+    """
+    data = await client.get("/maps/buildings")
+    if not data:
+        return "No building data available."
+
+    if query:
+        matched = {b: floors for b, floors in data.items() if query.lower() in b.lower()}
+        if not matched:
+            return f"No building found matching '{query}'."
+        data = matched
+
+    res = ["# Buildings"]
+    for building, floors in data.items():
+        res.append(f"- **{building}**: floors {', '.join(floors)}")
     return "\n".join(res)
 
 
-if __name__ == "__main__":
-    # Start the MCP server using SSE transport for remote access
-    # This turns it into a web server listening on port 8001
-    mcp.run(transport="sse")
+@mcp.tool()
+async def list_rooms():
+    """
+    List all distinct room names found in the class schedule (useful to disambiguate a room
+    before calling `get_room_schedule` or checking `find_available_rooms`).
+    """
+    rooms = await client.get("/agenda/rooms/list")
+    if not rooms:
+        return "No rooms found."
+    return "# Rooms\n" + "\n".join(f"- {r}" for r in rooms)
+
+
+@mcp.tool()
+async def find_available_rooms(start_time: str, end_time: str):
+    """
+    Find rooms with no scheduled class between `start_time` and `end_time`
+    (ISO datetimes, e.g. '2026-07-28T14:00:00' / '2026-07-28T16:00:00').
+    """
+    rooms = await client.get(
+        "/agenda/rooms/available", params={"start_time": start_time, "end_time": end_time}
+    )
+    if not rooms:
+        return f"No rooms available between {start_time} and {end_time}."
+    return f"# Available Rooms ({start_time} - {end_time})\n" + "\n".join(
+        f"- {r}" for r in rooms
+    )
+
+
+@mcp.tool()
+async def get_room_schedule(room_query: str, start_date: str, end_date: str):
+    """
+    Get the class schedule for rooms matching `room_query` (substring match) between
+    `start_date` and `end_date` (YYYY-MM-DD, e.g. '2026-07-28').
+    """
+    events = await client.get(
+        "/agenda/rooms/occupancy",
+        params={"room_query": room_query, "start_date": start_date, "end_date": end_date},
+    )
+    if not events:
+        return f"No events found for rooms matching '{room_query}' between {start_date} and {end_date}."
+
+    res = [f"# Schedule for rooms matching '{room_query}' ({start_date} - {end_date})"]
+    for e in events:
+        start = datetime.fromisoformat(e["start_time"]).strftime("%Y-%m-%d %H:%M")
+        end = datetime.fromisoformat(e["end_time"]).strftime("%H:%M")
+        res.append(f"- {start}-{end} @ **{e['room']}**: {e['name']} ({e['type']})")
+    return "\n".join(res)
+
+
+@mcp.tool()
+async def list_relationship_types():
+    """
+    List the valid relationship categories (e.g. friend, roommate, partner) used by
+    `get_student_relationships` and `find_shortest_path`.
+    """
+    types = await client.get("/relationship-types")
+    if not types:
+        return "No relationship types found."
+    return "# Relationship Types\n" + "\n".join(f"- {t['name']}" for t in types)
