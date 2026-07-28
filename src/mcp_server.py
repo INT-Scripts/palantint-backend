@@ -55,7 +55,7 @@ class PalantINTClient:
         return None
 
 
-client = PalantINTClient("http://localhost:3000/api/palantint")
+client = PalantINTClient("http://localhost:3000/api/private")
 
 
 @mcp.prompt()
