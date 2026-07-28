@@ -16,7 +16,6 @@ class Settings(BaseSettings):
     
     # Internal Authentication
     MCP_SERVICE_TOKEN: str | None = None
-    MCP_PALANTINT_URL: str = "http://localhost:3000"
     
     # Database
     DATABASE_URL: str | None = None

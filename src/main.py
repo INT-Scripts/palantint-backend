@@ -115,12 +115,13 @@ public_router.include_router(pub_maps_router)
 app.mount("/assets", StaticFiles(directory=str(settings.ASSETS_DIR)), name="assets")
 app.include_router(public_router)
 
+
 app.mount("/mcp", mcp.http_app(transport="sse"))
 
 
 @app.get("/")
 async def root():
-    return {"message": "Welcome to the PalantINT API"}
+    return {"message": "Welcome API"}
 
 
 @app.get("/health")

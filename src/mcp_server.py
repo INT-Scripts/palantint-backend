@@ -14,7 +14,6 @@ logger = logging.getLogger("mcp")
 logger.setLevel(logging.DEBUG)
 
 # Configuration from settings
-PALANTINT_URL = settings.MCP_PALANTINT_URL
 MCP_SERVICE_TOKEN = settings.MCP_SERVICE_TOKEN
 
 mcp = FastMCP("PalantINT")
@@ -56,7 +55,7 @@ class PalantINTClient:
         return None
 
 
-client = PalantINTClient(PALANTINT_URL)
+client = PalantINTClient("http://localhost:3000/api/palantint")
 
 
 @mcp.prompt()
@@ -83,7 +82,7 @@ Use these tools to answer questions about campus life, people, and buildings.
 - **Class Roster**: Use `get_class_roster(query)` to view students in a class or promo group.
 
 ## Housing & Location
-- **Specs**: Use `get_apartment_info(apartment_id)` (e.g., 'U3-101') to see room size and price.
+- **Specs**: Use `get_apartment_info(apartment_id)` (e.g., '7413') to see room size and price.
 - **Occupants**: Use `list_roommates(trombint_id)` to find who lives with someone.
 - **Where Is Student**: Use `where_is_student(trombint_id, datetime_str)` to infer current location (classroom or apartment).
 
