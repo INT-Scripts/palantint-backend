@@ -1,17 +1,19 @@
 import json
 import os
-from typing import Any, Dict, List
+import uuid
+from typing import Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from api.private.deps import User, require_admin, require_user
 from db.database import get_db
-from db.models import MapMetadata, ThreeDConfig
+from db.models import ApartmentDetail, MapMetadata, Student, ThreeDConfig
 
 from core.config import settings
 
@@ -27,9 +29,35 @@ class MapMetadataSchema(BaseModel):
     pillars: List[Pillar] = []
 
 
+class WireframeTransform(BaseModel):
+    position: Tuple[float, float, float] = (0, 0, 0)
+    rotation: Tuple[float, float, float] = (0, 0, 0)
+    scale: float = 1.0
+    floor_height: float = 0.5
+
+
+class BuildingCoordinates(BaseModel):
+    lat: float = 0.0
+    lng: float = 0.0
+
+
+class BuildingDetails(BaseModel):
+    address: str = ""
+    coordinates: BuildingCoordinates = BuildingCoordinates()
+
+
+class BuildingMarker(BaseModel):
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    bldg_id: str
+    label: str = ""
+    footprint: List[Tuple[float, float, float]] = []
+    wireframe: WireframeTransform = WireframeTransform()
+    details: BuildingDetails = BuildingDetails()
+
+
 class ThreeDConfigSchema(BaseModel):
     tile_mappings: Dict[str, str] = {}
-    markers: List[Dict[str, Any]] = []
+    markers: List[BuildingMarker] = []
 
 
 @router.get("/{building_id}/{floor_id}/metadata", response_model=MapMetadataSchema)
@@ -116,6 +144,8 @@ async def save_3d_config(
     current_admin: User = Depends(require_admin)
 ):
     """Saves the configuration for 3D tile mappings and markers to DB and vault."""
+    markers_data = [m.model_dump() for m in config.markers]
+
     stmt = select(ThreeDConfig).where(ThreeDConfig.key == "default")
     res = await db.execute(stmt)
     cfg = res.scalars().first()
@@ -123,12 +153,12 @@ async def save_3d_config(
         cfg = ThreeDConfig(
             key="default",
             tile_mappings=config.tile_mappings,
-            markers=config.markers
+            markers=markers_data
         )
         db.add(cfg)
     else:
         cfg.tile_mappings = config.tile_mappings
-        cfg.markers = config.markers
+        cfg.markers = markers_data
 
     await db.commit()
 
@@ -200,3 +230,20 @@ async def get_building_metadata(
             "pillars": m.pillars
         }
     return results
+
+
+@router.get("/{building_id}/occupants")
+async def get_building_occupants(
+    building_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_user)
+):
+    """Counts students currently assigned to a room registered under this building."""
+    stmt = (
+        select(func.count(Student.id))
+        .select_from(Student)
+        .join(ApartmentDetail, ApartmentDetail.id == Student.apartment)
+        .where(ApartmentDetail.building == building_id)
+    )
+    result = await db.execute(stmt)
+    return {"occupants": result.scalar() or 0}

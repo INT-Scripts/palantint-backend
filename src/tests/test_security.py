@@ -108,6 +108,26 @@ async def test_public_search_only_shows_clubs(client, db_session):
     assert data["clubs"][0]["name"] == "Photography Club"
 
 @pytest.mark.asyncio
+async def test_foyer_map_returns_room_mappings(client, db_session):
+    # The foyer_map.csv shipped in data/scraps/manual must resolve and be non-empty,
+    # and DB clubs must be matched onto their rooms (including multi-club rooms).
+    club = Club(id=uuid.uuid4(), name="DolphINT", slug="dolphint")
+    db_session.add(club)
+    await db_session.commit()
+
+    response = await client.get("/api/foyer/map")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) > 0
+
+    assert data["F0-4"]["club_id"] == str(club.id)
+    assert data["F0-4"]["club_name"] == "DolphINT"
+
+    # F0-2 "Cave (Club Code, ModelIT, GamINT, CELL)" is shared by several clubs
+    assert "clubs" in data["F0-2"]
+
+
+@pytest.mark.asyncio
 async def test_private_student_profile_requires_auth(client, db_session):
     student_id = uuid.uuid4()
     student = Student(id=student_id, first_name="John", last_name="Doe", trombint_id="jdoe")
