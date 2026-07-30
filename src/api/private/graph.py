@@ -2,9 +2,10 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
+from api.common import trombint_id_subquery
 from api.private.deps import User, require_user
 from db.database import get_db
-from db.models import Club, RelationshipType, Student, StudentClub, StudentRelationship
+from db.models import Organization, OrganizationMembership, Person, PersonRelationship, RelationshipType
 
 router = APIRouter(prefix="/graph", tags=["graph"])
 
@@ -14,21 +15,51 @@ async def get_full_graph(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_user),
 ):
-    """Returns all students, clubs, and their relationships as a graph structure."""
-    student_res = await db.execute(select(Student.id, Student.first_name, Student.last_name, Student.trombint_id, Student.profile_picture_path))
-    students = student_res.all()
+    """Returns all students, clubs, and their relationships as a graph structure.
 
-    club_res = await db.execute(select(Club.id, Club.name, Club.logo_url))
+    NOTE: `Person` now also covers professors/alumni/staff/external subjects,
+    but this graph historically only ever contained students (the old data
+    model had no other kind of person). We keep filtering to
+    `kind == "STUDENT"` here to preserve existing behavior; broadening the
+    graph to other person kinds is a product decision for later.
+    """
+    student_res = await db.execute(
+        select(
+            Person.id,
+            Person.first_name,
+            Person.last_name,
+            trombint_id_subquery(Person.id).label("trombint_id"),
+            Person.profile_picture_path,
+        ).where(Person.kind == "STUDENT")
+    )
+    students = student_res.all()
+    student_ids = {s.id for s in students}
+
+    club_res = await db.execute(
+        select(Organization.id, Organization.name, Organization.logo_url).where(Organization.kind == "CLUB")
+    )
     clubs = club_res.all()
 
-    sc_res = await db.execute(select(StudentClub.student_id, StudentClub.club_id, StudentClub.role))
-    student_clubs = sc_res.all()
+    sc_res = await db.execute(
+        select(OrganizationMembership.person_id, OrganizationMembership.organization_id, OrganizationMembership.role)
+        .join(Organization, Organization.id == OrganizationMembership.organization_id)
+        .where(Organization.kind == "CLUB", OrganizationMembership.ended_at.is_(None))
+    )
+    student_clubs = [row for row in sc_res.all() if row.person_id in student_ids]
 
     rel_res = await db.execute(
-        select(StudentRelationship.student_a_id, StudentRelationship.student_b_id, RelationshipType.name, RelationshipType.color)
-        .join(RelationshipType, StudentRelationship.relationship_type_id == RelationshipType.id)
+        select(
+            PersonRelationship.person_a_id,
+            PersonRelationship.person_b_id,
+            RelationshipType.name,
+            RelationshipType.color,
+        ).join(RelationshipType, PersonRelationship.relationship_type_id == RelationshipType.id)
     )
-    relationships = rel_res.all()
+    # Confidence/evidence_media_id are available on PersonRelationship but not
+    # surfaced here yet — open product decision, see PROMPT.md.
+    relationships = [
+        row for row in rel_res.all() if row.person_a_id in student_ids and row.person_b_id in student_ids
+    ]
 
     nodes = []
     links = []
@@ -52,16 +83,16 @@ async def get_full_graph(
 
     for sc in student_clubs:
         links.append({
-            "source": str(sc.student_id),
-            "target": str(sc.club_id),
+            "source": str(sc.person_id),
+            "target": str(sc.organization_id),
             "label": sc.role,
             "color": "#3b82f6"
         })
 
     for r in relationships:
         links.append({
-            "source": str(r.student_a_id),
-            "target": str(r.student_b_id),
+            "source": str(r.person_a_id),
+            "target": str(r.person_b_id),
             "label": r.name,
             "color": r.color
         })

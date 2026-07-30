@@ -1,97 +1,20 @@
 import uuid
 
 import pytest
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
 
-from core.auth import create_access_token, get_password_hash
-from db.database import get_db
-from db.models import ApartmentDetail, Club, Student, User
-from main import app
+from db.models import Location, Organization
 
-# Use an in-memory SQLite for testing if possible, or a dedicated test DB.
-# For now, let's assume a test database URL or use the environment one.
-# IMPORTANT: In a real scenario, we should NEVER use the production DB for tests.
-TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+from conftest import make_student
 
-from sqlalchemy import event
+_make_student = make_student
 
-
-@pytest_asyncio.fixture(scope="session")
-async def test_engine():
-    engine = create_async_engine(TEST_DATABASE_URL, echo=False)
-    
-    @event.listens_for(engine.sync_engine, "connect")
-    def receive_connect(dbapi_connection, connection_record):
-        dbapi_connection.create_function("unaccent", 1, lambda x: x if x else x)
-
-    async with engine.begin() as conn:
-        await conn.run_sync(SQLModel.metadata.create_all)
-    yield engine
-    await engine.dispose()
-
-@pytest_asyncio.fixture
-async def db_session(test_engine):
-    SessionLocal = async_sessionmaker(test_engine, expire_on_commit=False)
-    async with SessionLocal() as session:
-        yield session
-        # Clean up data after each test
-        for table in reversed(SQLModel.metadata.sorted_tables):
-            await session.execute(table.delete())
-        await session.commit()
-
-@pytest_asyncio.fixture
-async def client(db_session):
-    async def override_get_db():
-        yield db_session
-    
-    app.dependency_overrides[get_db] = override_get_db
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        yield ac
-    app.dependency_overrides.clear()
-
-@pytest_asyncio.fixture
-async def test_user(db_session):
-    user = User(
-        id=uuid.uuid4(),
-        username="testuser",
-        hashed_password=get_password_hash("testpassword"),
-        is_admin=False
-    )
-    db_session.add(user)
-    await db_session.commit()
-    await db_session.refresh(user)
-    return user
-
-@pytest_asyncio.fixture
-async def admin_user(db_session):
-    user = User(
-        id=uuid.uuid4(),
-        username="adminuser",
-        hashed_password=get_password_hash("adminpassword"),
-        is_admin=True
-    )
-    db_session.add(user)
-    await db_session.commit()
-    await db_session.refresh(user)
-    return user
-
-@pytest_asyncio.fixture
-def user_token(test_user):
-    return create_access_token(data={"sub": test_user.username, "is_admin": False})
-
-@pytest_asyncio.fixture
-def admin_token(admin_user):
-    return create_access_token(data={"sub": admin_user.username, "is_admin": True})
 
 @pytest.mark.asyncio
-async def test_public_search_only_shows_clubs(client, db_session):
+async def test_public_search_only_shows_clubs(client, db_session, trombint_source):
     # Setup: Add a student and a club
-    student = Student(id=uuid.uuid4(), first_name="John", last_name="Doe", trombint_id="jdoe")
-    club = Club(id=uuid.uuid4(), name="Photography Club", slug="photo-club")
-    db_session.add_all([student, club])
+    student = await _make_student(db_session, trombint_source)
+    club = Organization(id=uuid.uuid4(), kind="CLUB", name="Photography Club", slug="photo-club")
+    db_session.add(club)
     await db_session.commit()
 
     # Search without auth (public search)
@@ -111,7 +34,7 @@ async def test_public_search_only_shows_clubs(client, db_session):
 async def test_foyer_map_returns_room_mappings(client, db_session):
     # The foyer_map.csv shipped in data/scraps/manual must resolve and be non-empty,
     # and DB clubs must be matched onto their rooms (including multi-club rooms).
-    club = Club(id=uuid.uuid4(), name="DolphINT", slug="dolphint")
+    club = Organization(id=uuid.uuid4(), kind="CLUB", name="DolphINT", slug="dolphint")
     db_session.add(club)
     await db_session.commit()
 
@@ -128,26 +51,20 @@ async def test_foyer_map_returns_room_mappings(client, db_session):
 
 
 @pytest.mark.asyncio
-async def test_private_student_profile_requires_auth(client, db_session):
-    student_id = uuid.uuid4()
-    student = Student(id=student_id, first_name="John", last_name="Doe", trombint_id="jdoe")
-    db_session.add(student)
-    await db_session.commit()
+async def test_private_student_profile_requires_auth(client, db_session, trombint_source):
+    student = await _make_student(db_session, trombint_source)
 
     # Access without auth
-    response = await client.get(f"/api/private/students/{student_id}")
+    response = await client.get(f"/api/private/students/{student.id}")
     assert response.status_code == 401
 
 @pytest.mark.asyncio
-async def test_private_student_profile_accessible_with_auth(client, db_session, user_token):
-    student_id = uuid.uuid4()
-    student = Student(id=student_id, first_name="John", last_name="Doe", trombint_id="jdoe")
-    db_session.add(student)
-    await db_session.commit()
+async def test_private_student_profile_accessible_with_auth(client, db_session, user_token, trombint_source):
+    student = await _make_student(db_session, trombint_source)
 
     # Access with auth
     headers = {"Authorization": f"Bearer {user_token}"}
-    response = await client.get(f"/api/private/students/{student_id}", headers=headers)
+    response = await client.get(f"/api/private/students/{student.id}", headers=headers)
     assert response.status_code == 200
     assert response.json()["first_name"] == "John"
 
@@ -165,8 +82,14 @@ async def test_admin_routes_require_admin_privileges(client, admin_token, user_t
 
 @pytest.mark.asyncio
 async def test_apartment_details_public_access(client, db_session):
-    # This route is currently public in api_students.py
-    apt = ApartmentDetail(id="U3-101", building="U3", floor="1", type="T1", surface="18", price="400")
+    # This route is currently public in api/public/students.py
+    building = Location(id=uuid.uuid4(), kind="BUILDING", code="U3", name="U3")
+    db_session.add(building)
+    await db_session.flush()
+    apt = Location(
+        id=uuid.uuid4(), kind="APARTMENT", code="U3-101", parent_id=building.id,
+        attributes={"floor": "1", "type": "T1", "surface": "18", "price": "400"},
+    )
     db_session.add(apt)
     await db_session.commit()
 

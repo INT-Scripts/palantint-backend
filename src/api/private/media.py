@@ -8,10 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 
+from api.common import get_data_source_id
 from api.private.deps import User, require_admin, require_user
 from core.config import settings
 from db.database import get_db
-from db.models import Media, Student
+from db.models import Media, Person
 
 router = APIRouter(tags=["media"])
 
@@ -53,7 +54,7 @@ async def get_student_media(
     result = await db.execute(
         select(Media)
         .options(selectinload(Media.uploader))
-        .where(Media.student_id == student_id)
+        .where(Media.person_id == student_id)
         .order_by(Media.uploaded_at.desc())
     )
     items = result.scalars().all()
@@ -61,8 +62,8 @@ async def get_student_media(
     for item in items:
         d = {
             "id": str(item.id),
-            "student_id": str(item.student_id),
-            "type": item.type,
+            "student_id": str(item.person_id),
+            "type": item.kind,
             "file_path": item.file_path,
             "content": item.content,
             "author_name": item.author_name,
@@ -83,7 +84,7 @@ async def upload_media(
     current_admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    student = await db.get(Student, student_id)
+    student = await db.get(Person, student_id)
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
@@ -122,13 +123,16 @@ async def upload_media(
     else:
         raise HTTPException(status_code=400, detail="Invalid media type")
 
+    source_id = await get_data_source_id(db, "admin_panel")
+
     media = Media(
-        student_id=student_id,
-        type=type,
+        person_id=student_id,
+        kind=type,
         file_path=file_path,
         content=content,
         author_name=author_name,
         uploaded_by_user_id=current_admin.id,
+        source_id=source_id,
     )
     db.add(media)
     await db.commit()
@@ -136,8 +140,8 @@ async def upload_media(
 
     return {
         "id": str(media.id),
-        "student_id": str(media.student_id),
-        "type": media.type,
+        "student_id": str(media.person_id),
+        "type": media.kind,
         "file_path": media.file_path,
         "content": media.content,
         "author_name": media.author_name,

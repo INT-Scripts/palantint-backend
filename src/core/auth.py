@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from cryptography.fernet import Fernet
 from jose import jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
@@ -8,6 +9,15 @@ from pydantic import BaseModel
 from core.config import settings
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+_fernet = Fernet(settings.FERNET_KEY)
+
+
+def encrypt_secret(value: str) -> bytes:
+    return _fernet.encrypt(value.encode())
+
+
+def decrypt_secret(token: bytes) -> str:
+    return _fernet.decrypt(token).decode()
 
 
 class Token(BaseModel):

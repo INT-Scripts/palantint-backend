@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     # Security
     SECRET_KEY: str = "dev_secret_key_change_in_production"
     ALGORITHM: str = "HS256"
+    # Fernet key (32 url-safe base64-encoded bytes) used to encrypt third-party
+    # credentials (e.g. CAS) at rest in `user_credentials`. Generate with
+    # `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
+    FERNET_KEY: str = "H9A6BAwySrBGIGsjS2v13WK6jcyCnlyETdBAMOuXLpY="
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 5
     REFRESH_TOKEN_EXPIRE_MINUTES: int = 60
     

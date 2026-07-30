@@ -5,7 +5,7 @@ from sqlalchemy.future import select
 
 from api.private.deps import escape_like
 from db.database import get_db
-from db.models import Club
+from db.models import Organization
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -19,16 +19,17 @@ async def global_search(
         return {"students": [], "clubs": [], "class_groups": [], "apartments": []}
 
     query_clean = q.strip().lower()
-    
-    club_query = select(Club).where(
+
+    club_query = select(Organization).where(
+        Organization.kind.in_(("CLUB", "BUREAU")),
         or_(
-            func.unaccent(Club.name).ilike(func.unaccent(f"%{escape_like(query_clean)}%")),
-            func.unaccent(Club.slug).ilike(f"%{escape_like(query_clean)}%")
+            func.unaccent(Organization.name).ilike(func.unaccent(f"%{escape_like(query_clean)}%")),
+            func.unaccent(Organization.slug).ilike(f"%{escape_like(query_clean)}%")
         )
     ).limit(10)
     club_res = await db.execute(club_query)
     clubs_raw = club_res.scalars().all()
-    
+
     ranked_clubs = []
     for c in clubs_raw:
         score = 0

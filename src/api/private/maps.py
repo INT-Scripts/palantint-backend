@@ -10,10 +10,11 @@ from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy.orm import aliased
 
 from api.private.deps import User, require_admin, require_user
 from db.database import get_db
-from db.models import ApartmentDetail, MapMetadata, Student, ThreeDConfig
+from db.models import Location, MapMetadata, PersonHousing, ThreeDConfig
 
 from core.config import settings
 
@@ -60,6 +61,62 @@ class ThreeDConfigSchema(BaseModel):
     markers: List[BuildingMarker] = []
 
 
+@router.get("/buildings")
+async def get_buildings(current_user: User = Depends(require_user)):
+    """Was missing from the private router entirely — mcp_server.py's
+    get_map_location tool has been calling this path since before this
+    schema migration and always 404ing."""
+    from api.public.maps import BUILDING_FLOORS
+    return BUILDING_FLOORS
+
+
+async def _get_building_location(db: AsyncSession, building_id: str) -> Optional[Location]:
+    result = await db.execute(
+        select(Location).where(Location.kind == "BUILDING", Location.code == building_id)
+    )
+    return result.scalars().first()
+
+
+async def _get_floor_location(db: AsyncSession, building_id: str, floor_id: str) -> Optional[Location]:
+    building = await _get_building_location(db, building_id)
+    if not building:
+        return None
+    result = await db.execute(
+        select(Location).where(
+            Location.kind == "FLOOR",
+            Location.parent_id == building.id,
+            Location.code == floor_id,
+        )
+    )
+    return result.scalars().first()
+
+
+async def _get_or_create_floor_location(db: AsyncSession, building_id: str, floor_id: str) -> Location:
+    """Resolve the (building, floor) Location pair, creating either level on the
+    fly if this is the first time an admin saves metadata for it. The old code
+    had no such validation (it just wrote raw building_id/floor_id strings), so
+    we preserve that "always succeeds" behaviour rather than 404ing."""
+    building = await _get_building_location(db, building_id)
+    if not building:
+        building = Location(kind="BUILDING", code=building_id, name=building_id)
+        db.add(building)
+        await db.flush()
+
+    result = await db.execute(
+        select(Location).where(
+            Location.kind == "FLOOR",
+            Location.parent_id == building.id,
+            Location.code == floor_id,
+        )
+    )
+    floor = result.scalars().first()
+    if not floor:
+        floor = Location(kind="FLOOR", code=floor_id, name=floor_id, parent_id=building.id)
+        db.add(floor)
+        await db.flush()
+    return floor
+
+
 @router.get("/{building_id}/{floor_id}/metadata", response_model=MapMetadataSchema)
 async def get_map_metadata(
     building_id: str,
@@ -67,10 +124,11 @@ async def get_map_metadata(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_user)
 ):
-    stmt = select(MapMetadata).where(
-        MapMetadata.building_id == building_id,
-        MapMetadata.floor_id == floor_id
-    )
+    floor = await _get_floor_location(db, building_id, floor_id)
+    if not floor:
+        return MapMetadataSchema()
+
+    stmt = select(MapMetadata).where(MapMetadata.location_id == floor.id)
     result = await db.execute(stmt)
     meta = result.scalars().first()
     if meta:
@@ -82,27 +140,28 @@ async def get_map_metadata(
 
 @router.post("/{building_id}/{floor_id}/metadata")
 async def save_map_metadata(
-    building_id: str, 
-    floor_id: str, 
+    building_id: str,
+    floor_id: str,
     metadata: MapMetadataSchema,
     db: AsyncSession = Depends(get_db),
     current_admin: User = Depends(require_admin)
 ):
     pillars_data = [p.model_dump() for p in metadata.pillars]
-    
+
+    floor = await _get_or_create_floor_location(db, building_id, floor_id)
+
     stmt = insert(MapMetadata).values(
-        building_id=building_id,
-        floor_id=floor_id,
+        location_id=floor.id,
         pillars=pillars_data
     )
-    
+
     upsert_stmt = stmt.on_conflict_do_update(
-        index_elements=["building_id", "floor_id"],
+        index_elements=["location_id"],
         set_={
             "pillars": stmt.excluded.pillars
         }
     )
-    
+
     await db.execute(upsert_stmt)
     await db.commit()
     return {"status": "success"}
@@ -220,13 +279,25 @@ async def get_building_metadata(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_user)
 ):
-    stmt = select(MapMetadata).where(MapMetadata.building_id == building_id)
-    result = await db.execute(stmt)
-    metas = result.scalars().all()
-    
+    building = await _get_building_location(db, building_id)
+    if not building:
+        return {}
+
+    floors_result = await db.execute(
+        select(Location).where(Location.kind == "FLOOR", Location.parent_id == building.id)
+    )
+    floors = {f.id: f.code for f in floors_result.scalars().all()}
+    if not floors:
+        return {}
+
+    metas_result = await db.execute(
+        select(MapMetadata).where(MapMetadata.location_id.in_(floors.keys()))
+    )
+    metas = metas_result.scalars().all()
+
     results = {}
     for m in metas:
-        results[m.floor_id] = {
+        results[floors[m.location_id]] = {
             "pillars": m.pillars
         }
     return results
@@ -238,12 +309,25 @@ async def get_building_occupants(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_user)
 ):
-    """Counts students currently assigned to a room registered under this building."""
+    """Counts people currently housed in an apartment registered under this building.
+
+    The ingestion pipeline (scripts/.../loaders/apartments.py) sets each
+    APARTMENT Location's `parent_id` to its BUILDING Location, so that's the
+    sole convention matched here. (Apartment codes are bare room numbers,
+    e.g. "1101" — never building-prefixed — so a code-prefix fallback would
+    never match real data; dropped to avoid a false sense of resilience.)
+    """
+    ParentLoc = aliased(Location)
     stmt = (
-        select(func.count(Student.id))
-        .select_from(Student)
-        .join(ApartmentDetail, ApartmentDetail.id == Student.apartment)
-        .where(ApartmentDetail.building == building_id)
+        select(func.count(func.distinct(PersonHousing.person_id)))
+        .select_from(PersonHousing)
+        .join(Location, Location.id == PersonHousing.location_id)
+        .join(ParentLoc, ParentLoc.id == Location.parent_id)
+        .where(
+            PersonHousing.ended_at.is_(None),
+            Location.kind == "APARTMENT",
+            ParentLoc.code == building_id,
+        )
     )
     result = await db.execute(stmt)
     return {"occupants": result.scalar() or 0}

@@ -779,18 +779,28 @@ async def get_student_notes(trombint_id: str):
 
 
 @mcp.tool()
-async def get_laundry_status():
+async def get_laundry_status(building: Optional[str] = None):
     """
-    Check real-time machine availability.
+    Check real-time washer/dryer availability. Pass `building` (e.g. 'U3') to
+    check one building; omit it to check all laundry-equipped buildings.
     """
-    data = await client.get("/laundry/status")
-    if not data or not data.get("machines"):
+    params = {"building": building} if building else None
+    data = await client.get("/laundry/status", params=params)
+    if not data:
         return "Laundry status unavailable."
 
     res = ["# Laundry Status"]
-    for m in data["machines"]:
-        status = "FREE" if m["available"] else f"BUSY ({m['time_remaining']}m left)"
-        res.append(f"- Machine {m['id']} ({m['type']}): {status}")
+    for bldg, machines in data.items():
+        if not machines:
+            continue
+        res.append(f"\n## {bldg.upper()}")
+        for m in machines:
+            machine_type = "Dryer" if m.get("machine_type") == "sl" else "Washer"
+            status = "BUSY" if m.get("started_at") else "FREE"
+            res.append(f"- Machine {m.get('machine_nbr')} ({machine_type}): {status}")
+
+    if len(res) == 1:
+        return "Laundry status unavailable."
     return "\n".join(res)
 
 

@@ -15,6 +15,7 @@ from api.private.clubs import router as clubs_router
 # Private router and dependencies
 from api.private.deps import require_user, require_user_query_token
 from api.private.graph import router as graph_router
+from api.private.laundry import router as laundry_router
 from api.private.maps import router as maps_router
 from api.private.media import router as media_router
 from api.private.pay5vend import router as pay5vend_router
@@ -96,6 +97,7 @@ private_router.include_router(relationships_router)
 private_router.include_router(media_router)
 private_router.include_router(search_router)
 private_router.include_router(maps_router)
+private_router.include_router(laundry_router)
 private_router.include_router(graph_router)
 private_router.include_router(class_groups_router)
 private_router.include_router(assets_router)
