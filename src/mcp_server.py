@@ -3,7 +3,7 @@ import logging
 import secrets
 from collections import deque
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import httpx
 from fastapi import HTTPException
@@ -19,6 +19,12 @@ logger = logging.getLogger("mcp")
 
 # Configuration from settings
 MCP_SERVICE_TOKEN = settings.MCP_SERVICE_TOKEN
+
+# Default cap on how many rows any tool will emit. The tool surface is designed to
+# fit small models: descriptions are one or two lines, every list is capped, and
+# responses are plain `key: value` text rather than Markdown, because bold markers
+# and headings cost tokens without telling the model anything.
+MAX_ROWS = 40
 
 
 class ServiceTokenVerifier(TokenVerifier):
@@ -68,6 +74,47 @@ mcp = FastMCP(
 mcp._mcp_server.name = "PalantINT"
 
 
+# --------------------------------------------------------------------------- #
+# Formatting helpers
+# --------------------------------------------------------------------------- #
+
+def _fields(*pairs: Tuple[str, Any]) -> str:
+    """Join `key: value` pairs on one line, dropping the ones with no value.
+
+    Omitting a field entirely is cheaper than printing 'N/A' and reads the same.
+    """
+    return ", ".join(f"{k}: {v}" for k, v in pairs if v)
+
+
+def _block(title: str, rows: List[str], limit: int = MAX_ROWS) -> str:
+    """Render `title (count):` followed by one row per line, capped at `limit`.
+
+    The truncation note is what tells the model to narrow its query rather than
+    silently reasoning over a partial list.
+    """
+    if not rows:
+        return f"{title}: none"
+    body = "\n".join(rows[:limit])
+    if len(rows) > limit:
+        body += f"\n(+{len(rows) - limit} more — narrow the query)"
+    return f"{title} ({len(rows)}):\n{body}"
+
+
+def _who(person: Dict[str, Any]) -> str:
+    """'trombintid Firstname Lastname', falling back to the name alone."""
+    name = f"{person.get('first_name', '')} {person.get('last_name', '')}".strip()
+    tid = person.get("trombint_id")
+    return f"{tid} {name}" if tid else name
+
+
+def _hhmm(iso: str) -> str:
+    return datetime.fromisoformat(iso).strftime("%H:%M")
+
+
+# --------------------------------------------------------------------------- #
+# API client
+# --------------------------------------------------------------------------- #
+
 class PalantINTClient:
     """Thin wrapper around the PalantINT private API, reusing a single
     pooled connection instead of opening a new one per request."""
@@ -82,6 +129,9 @@ class PalantINTClient:
         self._http = httpx.AsyncClient(
             base_url=self.base_url, headers=headers, timeout=30.0
         )
+        # Resolved student references, keyed by the lowercased reference the caller
+        # used. Lets a follow-up tool call on the same person skip the search round-trip.
+        self._resolved: Dict[str, Tuple[str, str]] = {}
 
     async def aclose(self):
         await self._http.aclose()
@@ -109,14 +159,53 @@ class PalantINTClient:
     async def post(self, endpoint: str, json: Optional[Dict[str, Any]] = None):
         return await self._request("POST", endpoint, json=json)
 
-    async def find_student_id(self, trombint_id: str) -> Optional[str]:
-        """Convert a TrombintID (string) to a UUID (string)."""
-        search_data = await self.get("/search", params={"q": trombint_id})
-        target = trombint_id.lower()
-        for s in search_data.get("students", []):
-            if s["trombint_id"].lower() == target:
-                return s["id"]
-        return None
+    async def resolve_student(self, ref: str) -> Tuple[Optional[str], str]:
+        """Resolve a TrombintID *or* a person's name to (student_uuid, display_name).
+
+        Accepting names as well as IDs removes the mandatory `search_directory` turn
+        that small models routinely skip (and then hallucinate an ID for). An exact
+        TrombintID always wins; a name that matches exactly one student is taken as
+        that student; anything more ambiguous comes back unresolved.
+
+        On failure returns `(None, message)` where the message is already phrased for
+        the model — callers just return it verbatim.
+        """
+        key = (ref or "").strip().lower()
+        if not key:
+            return None, "No student given."
+        if key in self._resolved:
+            return self._resolved[key]
+
+        students = (await self.get("/search", params={"q": ref})).get("students", [])
+        exact = [s for s in students if (s.get("trombint_id") or "").lower() == key]
+        picked = exact[0] if exact else (students[0] if len(students) == 1 else None)
+
+        if picked is None:
+            if not students:
+                return None, f"No student matches '{ref}'."
+            options = "; ".join(_who(s) for s in students[:8])
+            return None, f"'{ref}' matches several students: {options}. Retry with one TrombintID."
+
+        resolved = (picked["id"], f"{picked['first_name']} {picked['last_name']}")
+        if len(self._resolved) > 512:
+            self._resolved.clear()
+        self._resolved[key] = resolved
+        return resolved
+
+    async def resolve_club(self, ref: str) -> Tuple[Optional[Dict[str, Any]], str]:
+        """Resolve a club name or slug to (club_payload, note).
+
+        Unlike students, a club query that matches several clubs still picks the best
+        match — but `note` then names the runners-up so the model can correct itself
+        without spending a turn on a disambiguation round-trip.
+        """
+        clubs = (await self.get("/search", params={"q": ref})).get("clubs", [])
+        if not clubs:
+            return None, f"No club matches '{ref}'."
+        note = ""
+        if len(clubs) > 1:
+            note = "also matched: " + ", ".join(c["name"] for c in clubs[1:4])
+        return await self.get(f"/clubs/{clubs[0]['id']}"), note
 
 
 client = PalantINTClient("http://localhost:3000/api/private")
@@ -124,98 +213,36 @@ client = PalantINTClient("http://localhost:3000/api/private")
 
 @mcp.prompt()
 def tool_guide():
-    """
-    A comprehensive guide on how to use the PalantINT tools effectively.
-    """
-    return """
-# PalantINT Tool Usage Guide
+    """How to use the PalantINT tools."""
+    return """PalantINT answers questions about campus people, clubs, rooms and housing.
 
-Use these tools to answer questions about campus life, people, clubs, and buildings.
-
-Almost every tool takes a `trombint_id` (a short student identifier), never a name or a UUID
-directly. Always resolve names to a `trombint_id` via `search_directory` first — do not guess one.
-
-## People & Directory
-1. **Identify / free-text search**: `search_directory(query)` — fuzzy-matches students, clubs, and
-   class groups by name, TrombintID, or apartment (e.g. `search_directory(query="jdupont")`).
-2. **Browse / filter**: `search_directory(promo=..., ecole=..., building=...)` — list students by
-   exact promo, école, or building (e.g. building='7' for U7), optionally combined with `query`.
-   Use this instead of `search_directory(query=...)` when you know the criteria but not a name
-   (e.g. "who lives in building 7", "list of TSP first-years"). Results are capped by `limit`
-   (default 25); a truncation note tells you when to narrow the filters or raise `limit`.
-3. **Profile**: `get_student_profile(trombint_id)` — name, promo, school, email, clubs.
-4. **Relationships**: `get_student_relationships(trombint_id)` — friends, partners, roommates.
-5. **Socials**: `get_student_socials(trombint_id)` — LinkedIn, GitHub, Discord, Instagram, etc.
-6. **Notes**: `get_student_notes(trombint_id)` — quotes/notes other students left about them.
-7. **Pathfinding**: `find_shortest_path(trombint_id_1, trombint_id_2)` — shortest chain of
-   relationships/roommates/shared clubs connecting two students, with degrees of separation.
-8. **Relationship taxonomy**: `list_relationship_types()` — the valid relationship categories
-   (friend, roommate, partner, etc.) that appear in `get_student_relationships` output.
-
-## Clubs & Academics
-- **Club info**: `get_club_info(query)` — description, association, foyer room, links, upcoming
-  events. Matches the first club found for `query`; if the query is ambiguous (e.g. an acronym
-  matching multiple clubs), mention that to the user and suggest a more specific query.
-- **Club members**: `list_club_members(query)` — executive board (mandat) and regular members.
-  Same first-match caveat as `get_club_info`.
-- **Class roster**: `get_class_roster(query)` — students in a class or promo group
-  (e.g. 'TSP_INF1', 'IMT_L3'); matches by substring against the class group name.
-
-## Housing & Location
-- **Apartment specs**: `get_apartment_info(apartment_id)` (e.g. '7413') — size, price, floor,
-  scholarship allocation.
-- **Roommates**: `list_roommates(trombint_id)` — who else lives in the same apartment.
-- **Where is student**: `where_is_student(trombint_id, datetime_str)` — infers current location
-  (classroom from schedule, or home apartment) at a given ISO datetime, e.g.
-  `datetime_str="2026-07-28T14:30:00"`. Omit `datetime_str` to use the current time.
-- **Buildings**: `get_map_location(query)` — lists residential buildings and their floors
-  (e.g. `query="U3"`). Does not cover individual rooms or classrooms — use the Rooms tools below,
-  or `where_is_student`/`get_student_profile` for a specific student's apartment.
-
-## Rooms & Availability
-- **List rooms**: `list_rooms()` — every room name that appears in the class schedule, useful to
-  disambiguate a room name before using the tools below.
-- **Free rooms**: `find_available_rooms(start_time, end_time)` — rooms with no class scheduled
-  in a given ISO datetime window, e.g. "is any room free at 3pm today".
-- **Room schedule**: `get_room_schedule(room_query, start_date, end_date)` — what's scheduled in
-  a room (substring match) over a `YYYY-MM-DD` date range.
-
-## Schedule & Availability
-- **Daily schedule**: `get_student_schedule(trombint_id, date)` — classes on a given day; `date`
-  is `YYYY-MM-DD` (e.g. `date="2026-07-28"`), defaults to today.
-- **Find common time**: `find_common_free_slots(trombint_ids, date)` — common free windows
-  (08:00–20:00) across multiple students on one `YYYY-MM-DD` date, for scheduling meetings.
-
-## Campus Status
-- **Laundry**: `get_laundry_status()` — real-time washer/dryer availability.
-
-## Tips
-- If a tool reports "not found", double-check the `trombint_id` via `search_directory` rather than
-  retrying with a guessed ID.
-- Dates and datetimes must be ISO formatted (`YYYY-MM-DD` / `YYYY-MM-DDTHH:MM:SS`); anything else
-  will be rejected.
+Rules:
+- Student tools accept a TrombintID or a full name directly. Do not call search_directory
+  first just to get an ID, and never invent one. If a name is ambiguous the tool replies
+  with the matching TrombintIDs — retry with one of them.
+- Use search_directory when you need to browse (promo, school, building) or to find a club
+  or class group, not to resolve a name you already have.
+- Dates are YYYY-MM-DD, datetimes are YYYY-MM-DDTHH:MM:SS. Anything else is rejected.
+- Lists are capped. A "(+N more)" line means narrow the query, not that the data is missing.
 """
 
 
+# --------------------------------------------------------------------------- #
+# Directory
+# --------------------------------------------------------------------------- #
+
 @mcp.tool()
 async def search_directory(
-    query: Optional[str] = None,
-    promo: Optional[str] = None,
-    ecole: Optional[str] = None,
-    building: Optional[str] = None,
+    query: str = "",
+    promo: str = "",
+    ecole: str = "",
+    building: str = "",
     limit: int = 25,
 ):
-    """
-    Search or browse the directory for students and clubs. Returns IDs/Slugs for further lookup.
+    """Search students, clubs and class groups, or browse students by filter.
 
-    - **Free-text lookup**: pass only `query` (a name, TrombintID, or apartment, e.g. 'jdupont')
-      to fuzzy-search students, clubs, and class groups by relevance.
-    - **Filtered browsing**: pass `promo` (e.g. 'Ingénieur 1ère année'), `ecole` (e.g. 'Télécom SudParis'),
-      and/or `building` (e.g. '7' for building U7) to list students matching those exact criteria —
-      use this for questions like "who's in TSP_INF2" or "students in building 7" instead of guessing
-      a search term. `query` can be combined with these filters to narrow further by name.
-
-    `limit` caps how many students are returned (default 25, max 50) to avoid flooding the response.
+    query: name, TrombintID or apartment. promo/ecole/building: exact filters for
+    browsing ('7' means building U7); combine with query to narrow further.
     """
     limit = max(1, min(limit, 50))
 
@@ -232,428 +259,161 @@ async def search_directory(
 
         students = await client.get("/students", params=params)
         if not students:
-            return f"No students found matching promo={promo!r}, ecole={ecole!r}, building={building!r}, query={query!r}."
-
-        output = [f"### Students Found ({len(students)}{'+' if len(students) == limit else ''})"]
-        for s in students:
-            output.append(
-                f"- {s['first_name']} {s['last_name']} (TrombintID: {s['trombint_id']}, "
-                f"Promo: {s.get('promo') or 'N/A'}, School: {s.get('ecole') or 'N/A'}, "
-                f"Apt: {s.get('apartment') or 'N/A'})"
+            filters = _fields(
+                ("promo", promo), ("ecole", ecole), ("building", building), ("query", query)
             )
+            return f"No students match {filters}."
+
+        # Columns pinned by a filter are identical on every row, so print them once
+        # in the header instead of repeating them 25 times.
+        pinned = _fields(("promo", promo), ("school", ecole), ("building", building))
+        rows = [
+            ", ".join(
+                [_who(s)]
+                + [
+                    f"{k}: {v}"
+                    for k, v in (
+                        ("promo", None if promo else s.get("promo")),
+                        ("school", None if ecole else s.get("ecole")),
+                        ("apt", s.get("apartment")),
+                    )
+                    if v
+                ]
+            )
+            for s in students
+        ]
+        out = _block(f"students {pinned}" if pinned else "students", rows, limit)
         if len(students) == limit:
-            output.append("\n_Results were truncated — narrow your filters or raise `limit` for more._")
-        return "\n".join(output)
+            out += "\n(limit reached — narrow the filters or raise limit)"
+        return out
 
     if not query:
-        return "Please provide a `query`, or at least one of `promo`/`ecole`/`building` to browse."
+        return "Give a query, or one of promo/ecole/building to browse."
 
     data = await client.get("/search", params={"q": query})
+    out = []
 
-    output = []
     students = data.get("students", [])[:limit]
     if students:
-        output.append(f"### Students Found ({len(students)})")
-        for s in students:
-            output.append(
-                f"- {s['first_name']} {s['last_name']} (TrombintID: {s['trombint_id']}, Apt: {s['apartment'] or 'N/A'})"
+        out.append(
+            _block(
+                "students",
+                [f"{_who(s)}, apt: {s['apartment']}" if s.get("apartment") else _who(s) for s in students],
+                limit,
             )
-
+        )
     if data.get("clubs"):
-        output.append("\n### Clubs Found")
-        for c in data["clubs"]:
-            output.append(f"- {c['name']} (Slug: {c['slug']})")
-
+        out.append("clubs: " + "; ".join(f"{c['name']} ({c['slug']})" for c in data["clubs"]))
     if data.get("class_groups"):
-        output.append("\n### Class Groups Found")
-        for cg in data["class_groups"]:
-            output.append(f"- {cg['name']}")
+        out.append("groups: " + "; ".join(cg["name"] for cg in data["class_groups"]))
 
-    return "\n".join(output) if output else f"No results found for '{query}'."
+    return "\n".join(out) if out else f"No results for '{query}'."
 
 
 @mcp.tool()
-async def get_student_profile(trombint_id: str):
+async def get_student(
+    student: str,
+    info: Literal["profile", "socials", "relations", "notes", "all"] = "profile",
+):
+    """Look up one student by TrombintID or full name.
+
+    info: profile (promo, school, email, apartment, clubs) | socials | relations
+    (friends, partners, roommates) | notes (quotes left by others) | all.
     """
-    Get basic profile details: name, promo, school, email, and clubs.
-    """
-    student_id = await client.find_student_id(trombint_id)
+    student_id, who = await client.resolve_student(student)
     if not student_id:
-        return f"Student '{trombint_id}' not found."
+        return who
 
-    data = await client.get(f"/students/{student_id}")
+    # /students/{id} already carries socials, clubs, groups and notes, so only the
+    # relations view costs a second request.
+    want_rels = info in ("relations", "all")
+    fetches = [client.get(f"/students/{student_id}")]
+    if want_rels:
+        fetches.append(client.get(f"/students/{student_id}/relationships"))
+    results = await asyncio.gather(*fetches)
+    data, rels = results[0], (results[1] if want_rels else [])
 
-    res = [
-        f"# {data['first_name']} {data['last_name']}",
-        f"- **Promo**: {data.get('promo', 'N/A')}",
-        f"- **School**: {data.get('ecole', 'N/A')}",
-        f"- **Email**: {data.get('email', 'N/A')}",
-        f"- **Apartment**: {data.get('apartment', 'N/A')}",
-    ]
+    tid = data.get("trombint_id") or student
+    out = [f"{who} ({tid})"]
 
-    if data.get("clubs"):
-        res.append("\n**Clubs**:")
-        for sc in data["clubs"]:
-            res.append(
-                f"- {sc.get('club', {}).get('name')} ({sc.get('role', 'Member')})"
+    if info in ("profile", "all"):
+        out.append(
+            _fields(
+                ("promo", data.get("promo")),
+                ("school", data.get("ecole")),
+                ("email", data.get("email")),
+                ("apt", data.get("apartment")),
+            )
+        )
+        if data.get("clubs"):
+            out.append(
+                "clubs: "
+                + "; ".join(
+                    f"{c.get('club_name')} ({c.get('role') or 'member'})" for c in data["clubs"]
+                )
+            )
+        if data.get("class_groups"):
+            out.append(
+                "groups: " + "; ".join(g.get("class_group_name") for g in data["class_groups"])
             )
 
-    return "\n".join(res)
-
-
-@mcp.tool()
-async def get_student_socials(trombint_id: str):
-    """
-    Get registered social media links (LinkedIn, GitHub, Discord, Instagram, etc.) for a student.
-    """
-    student_id = await client.find_student_id(trombint_id)
-    if not student_id:
-        return f"Student '{trombint_id}' not found."
-
-    data = await client.get(f"/students/{student_id}")
-    socials = data.get("social_links", [])
-
-    if not socials:
-        return f"No social links registered for {trombint_id}."
-
-    res = [
-        f"# Social Links for {data.get('first_name', '')} {data.get('last_name', '')} ({trombint_id})"
-    ]
-    for s in socials:
-        res.append(f"- **{s['platform']}**: [{s['username']}]({s['url']})")
-
-    return "\n".join(res)
-
-
-@mcp.tool()
-async def get_student_relationships(trombint_id: str):
-    """
-    Find friends, partners, and roommates of a student.
-    """
-    student_id = await client.find_student_id(trombint_id)
-    if not student_id:
-        return f"Student '{trombint_id}' not found."
-
-    data = await client.get(f"/students/{student_id}/relationships")
-    if not data:
-        return f"No social data found for {trombint_id}."
-
-    res = [f"# Relationships for {trombint_id}"]
-    for rel in data:
-        other = rel["other_student"]
-        rel_type = rel["relationship_type"]["name"]
-        res.append(f"- {other['first_name']} {other['last_name']} ({rel_type})")
-
-    return "\n".join(res)
-
-
-@mcp.tool()
-async def get_club_info(query: str):
-    """
-    Get detailed information about a club, including description, origin association, foyer room, links, and events.
-    """
-    search_data = await client.get("/search", params={"q": query})
-    clubs = search_data.get("clubs", [])
-    if not clubs:
-        return f"No club found matching '{query}'."
-
-    club_id = clubs[0]["id"]
-    data = await client.get(f"/clubs/{club_id}")
-
-    res = [
-        f"# {data['name']}",
-        f"- **Type**: {data.get('type') or 'Club'}",
-        f"- **Association**: {data.get('association_of_origin') or 'N/A'}",
-        f"- **Foyer Room**: {data.get('foyer_room') or 'N/A'}",
-        f"- **Slug**: {data.get('slug') or 'N/A'}",
-    ]
-    if data.get("description"):
-        res.append(f"\n**Description**:\n{data['description']}")
-
-    if data.get("links"):
-        res.append("\n**Links**:")
-        for link in data["links"]:
-            res.append(f"- [{link['name']}]({link['url']})")
-
-    if data.get("events"):
-        res.append("\n**Upcoming Events**:")
-        for e in data["events"]:
-            start = datetime.fromisoformat(e["start_time"]).strftime("%Y-%m-%d %H:%M")
-            res.append(f"- **{e['name']}** ({start}) @ {e.get('room') or 'TBD'}")
-
-    return "\n".join(res)
-
-
-@mcp.tool()
-async def list_club_members(query: str):
-    """
-    List members and executive board officers (mandats) of a club.
-    """
-    search_data = await client.get("/search", params={"q": query})
-    clubs = search_data.get("clubs", [])
-    if not clubs:
-        return f"No club found matching '{query}'."
-
-    club_id = clubs[0]["id"]
-    data = await client.get(f"/clubs/{club_id}")
-    members = data.get("members", [])
-
-    if not members:
-        return f"No member roster found for {data['name']}."
-
-    res = [f"# Members of {data['name']} ({len(members)} total)"]
-
-    board = [m for m in members if m.get("is_mandat")]
-    regular = [m for m in members if not m.get("is_mandat")]
-
-    if board:
-        res.append("\n### Executive Board (Mandat)")
-        for m in board:
-            res.append(
-                f"- **{m['first_name']} {m['last_name']}** ({m.get('role', 'Officer')}) - Promo: {m.get('promo', 'N/A')}"
-            )
-
-    if regular:
-        res.append("\n### Members")
-        for m in regular:
-            res.append(
-                f"- {m['first_name']} {m['last_name']} ({m.get('role', 'Member')}) - TrombintID: {m.get('trombint_id', 'N/A')}"
-            )
-
-    return "\n".join(res)
-
-
-@mcp.tool()
-async def get_class_roster(query: str):
-    """
-    Get roster of students enrolled in a class or promotion group (e.g. 'TSP_INF1', 'IMT_L3').
-    """
-    groups = await client.get("/class-groups")
-    matched_group = None
-    query_lower = query.lower()
-    for g in groups:
-        if query_lower in g["name"].lower():
-            matched_group = g
-            break
-
-    if not matched_group:
-        return f"No class group found matching '{query}'."
-
-    group_data = await client.get(f"/class-groups/{matched_group['id']}")
-    members = group_data.get("members", [])
-
-    if not members:
-        return f"No students found in class group '{group_data['name']}'."
-
-    res = [f"# Roster for {group_data['name']} ({len(members)} students)"]
-    for m in members:
-        res.append(
-            f"- **{m['first_name']} {m['last_name']}** (TrombintID: {m.get('trombint_id', 'N/A')}, Promo: {m.get('promo', 'N/A')})"
+    if info in ("socials", "all"):
+        socials = data.get("social_links") or []
+        out.append(
+            "socials: " + "; ".join(f"{s['platform']} {s['url']}" for s in socials)
+            if socials
+            else "socials: none"
         )
 
-    return "\n".join(res)
-
-
-@mcp.tool()
-async def get_apartment_info(apartment_id: str):
-    """
-    Get specifications of a specific apartment (U3-101): size, price, floor.
-    """
-    all_details = await client.get("/students/apartments/details")
-    apt = all_details.get(apartment_id.upper())
-
-    if not apt:
-        return f"No technical details found for apartment {apartment_id}."
-
-    return f"""# Apartment {apartment_id}
-- **Building**: {apt["Bâtiment"]}
-- **Floor**: {apt["Etage"]}
-- **Type**: {apt["Type"]}
-- **Surface**: {apt["Superficie"]}
-- **Price**: {apt["Tarif"]}
-- **Allocations**: Boursier: {apt["Allocation boursier"]} / Non-Boursier: {apt["Allocation non boursier"]}"""
-
-
-@mcp.tool()
-async def list_roommates(trombint_id: str):
-    """
-    List all students living in the same apartment as the given student.
-    """
-    student_id = await client.find_student_id(trombint_id)
-    if not student_id:
-        return f"Student '{trombint_id}' not found."
-
-    # Relationships endpoint includes roommates as 'colocataires'
-    data = await client.get(f"/students/{student_id}/relationships")
-    roommates = [
-        rel
-        for rel in data
-        if rel["relationship_type"]["name"].lower() in ("colocataire", "roommate")
-    ]
-
-    if not roommates:
-        return f"{trombint_id} has no listed roommates."
-
-    res = [f"# Roommates of {trombint_id}"]
-    for r in roommates:
-        other = r["other_student"]
-        res.append(f"- {other['first_name']} {other['last_name']}")
-
-    return "\n".join(res)
-
-
-@mcp.tool()
-async def get_student_schedule(trombint_id: str, date: Optional[str] = None):
-    """
-    Get a student's class schedule for a specific date (YYYY-MM-DD). Defaults to today.
-    """
-    student_id = await client.find_student_id(trombint_id)
-    if not student_id:
-        return f"Student '{trombint_id}' not found."
-
-    target_date = date or datetime.now().strftime("%Y-%m-%d")
-
-    # We use the compare endpoint for a single student to get their daily agenda
-    payload = {
-        "student_ids": [student_id],
-        "start_date": target_date,
-        "end_date": target_date,
-    }
-
-    data = await client.post("/agenda/compare", json=payload)
-    events = data.get(str(student_id), [])
-
-    if not events:
-        return f"No classes found for {trombint_id} on {target_date}."
-
-    res = [f"# Schedule for {trombint_id} on {target_date}"]
-    for e in events:
-        start = datetime.fromisoformat(e["start_time"]).strftime("%H:%M")
-        end = datetime.fromisoformat(e["end_time"]).strftime("%H:%M")
-        res.append(f"- {start}-{end}: **{e['name']}** ({e['type']})")
-
-    return "\n".join(res)
-
-
-@mcp.tool()
-async def find_common_free_slots(
-    trombint_ids: list[str], date: Optional[str] = None
-):
-    """
-    Find common free time slots between multiple students on a specific date (YYYY-MM-DD). Defaults to today.
-    """
-    if not trombint_ids:
-        return "Please provide at least one student TrombintID."
-
-    target_date = date or datetime.now().strftime("%Y-%m-%d")
-
-    resolved = await asyncio.gather(*(client.find_student_id(tid) for tid in trombint_ids))
-
-    student_ids = []
-    found_map = {}
-    for tid, sid in zip(trombint_ids, resolved):
-        if sid:
-            student_ids.append(sid)
-            found_map[sid] = tid
-
-    if not student_ids:
-        return "None of the specified students were found."
-
-    payload = {
-        "student_ids": student_ids,
-        "start_date": target_date,
-        "end_date": target_date,
-    }
-
-    agenda_data = await client.post("/agenda/compare", json=payload)
-
-    # Collect occupied intervals in minutes from 08:00 to 20:00 (480m to 1200m)
-    day_start = 8 * 60  # 08:00
-    day_end = 20 * 60  # 20:00
-    busy_intervals = []
-
-    for sid in student_ids:
-        events = agenda_data.get(str(sid), [])
-        for e in events:
-            st = datetime.fromisoformat(e["start_time"])
-            et = datetime.fromisoformat(e["end_time"])
-            s_min = max(day_start, st.hour * 60 + st.minute)
-            e_min = min(day_end, et.hour * 60 + et.minute)
-            if s_min < e_min:
-                busy_intervals.append((s_min, e_min))
-
-    # Merge overlapping busy intervals
-    busy_intervals.sort(key=lambda x: x[0])
-    merged_busy = []
-    for interval in busy_intervals:
-        if not merged_busy or merged_busy[-1][1] < interval[0]:
-            merged_busy.append(interval)
-        else:
-            merged_busy[-1] = (
-                merged_busy[-1][0],
-                max(merged_busy[-1][1], interval[1]),
+    if want_rels:
+        # Group by relationship type: one line per type beats one line per person.
+        by_type: Dict[str, List[str]] = {}
+        for rel in rels or []:
+            by_type.setdefault(rel["relationship_type"]["name"].lower(), []).append(
+                _who(rel["other_student"])
             )
+        out.append(
+            _block("relations", [f"{t}: {'; '.join(p)}" for t, p in by_type.items()])
+            if by_type
+            else "relations: none"
+        )
 
-    # Compute free intervals
-    free_intervals = []
-    curr = day_start
-    for b_start, b_end in merged_busy:
-        if b_start > curr:
-            free_intervals.append((curr, b_start))
-        curr = max(curr, b_end)
-    if curr < day_end:
-        free_intervals.append((curr, day_end))
+    if info in ("notes", "all"):
+        notes = [m for m in (data.get("media") or []) if m.get("content")]
+        out.append(
+            _block("notes", [f'"{n["content"]}" — {n.get("author_name") or "anonymous"}' for n in notes])
+            if notes
+            else "notes: none"
+        )
 
-    names = ", ".join(found_map.values())
-    res = [f"# Common Free Slots on {target_date}", f"**Students**: {names}\n"]
-
-    if not free_intervals:
-        res.append("No common free slots found between 08:00 and 20:00.")
-    else:
-        for s_min, e_min in free_intervals:
-            sh, sm = divmod(s_min, 60)
-            eh, em = divmod(e_min, 60)
-            res.append(
-                f"- **{sh:02d}:{sm:02d} - {eh:02d}:{em:02d}** ({e_min - s_min} mins)"
-            )
-
-    return "\n".join(res)
+    return "\n".join(line for line in out if line)
 
 
 @mcp.tool()
-async def find_shortest_path(trombint_id_1: str, trombint_id_2: str):
-    """
-    Find the shortest connection path between two students via relationships, roommates, or common clubs.
-    """
-    sid1 = await client.find_student_id(trombint_id_1)
-    sid2 = await client.find_student_id(trombint_id_2)
-
+async def find_shortest_path(student_a: str, student_b: str):
+    """Shortest chain of relationships, roommates or shared clubs linking two students."""
+    (sid1, who1), (sid2, who2) = await asyncio.gather(
+        client.resolve_student(student_a), client.resolve_student(student_b)
+    )
     if not sid1:
-        return f"Student '{trombint_id_1}' not found."
+        return who1
     if not sid2:
-        return f"Student '{trombint_id_2}' not found."
-
+        return who2
     if sid1 == sid2:
-        return "Both arguments refer to the same student."
+        return "Both refer to the same student."
 
     graph = await client.get("/graph")
     nodes = {n["id"]: n for n in graph.get("nodes", [])}
 
-    # Build adjacency list: node_id -> list of (neighbor_id, edge_label)
-    adj = {}
+    adj: Dict[str, List[Tuple[str, str]]] = {}
     for link in graph.get("links", []):
-        src, tgt, label = (
-            link["source"],
-            link["target"],
-            link.get("label", "connected"),
-        )
+        src, tgt, label = link["source"], link["target"], link.get("label", "linked")
         adj.setdefault(src, []).append((tgt, label))
         adj.setdefault(tgt, []).append((src, label))
 
-    # BFS from sid1 to sid2
     queue = deque([[sid1]])
     visited = {sid1}
-    parent_edge = {}
+    parent_edge: Dict[Tuple[str, str], str] = {}
 
     found_path = None
     while queue:
@@ -671,220 +431,327 @@ async def find_shortest_path(trombint_id_1: str, trombint_id_2: str):
                 queue.append(path + [neighbor])
 
     if not found_path:
-        return f"No path found between '{trombint_id_1}' and '{trombint_id_2}' in the social graph."
+        return f"No path between {who1} and {who2}."
 
-    res = [
-        f"# Connection Path: {trombint_id_1} ↔ {trombint_id_2}",
-        f"**Degrees of Separation**: {len(found_path) - 1}\n",
-    ]
-    for i in range(len(found_path) - 1):
-        u, v = found_path[i], found_path[i + 1]
-        u_node = nodes.get(u, {})
-        v_node = nodes.get(v, {})
-        u_name = u_node.get("name") or u
-        v_name = v_node.get("name") or v
-        edge_label = (
-            parent_edge.get((u, v))
-            or parent_edge.get((v, u))
-            or "connected"
+    # One line for the whole chain: "A -(friend)- B -(club BDE)- C".
+    chain = nodes.get(found_path[0], {}).get("name") or found_path[0]
+    for u, v in zip(found_path, found_path[1:]):
+        label = parent_edge.get((u, v)) or parent_edge.get((v, u)) or "linked"
+        chain += f" -({label})- " + (nodes.get(v, {}).get("name") or v)
+
+    return f"{len(found_path) - 1} degrees\n{chain}"
+
+
+# --------------------------------------------------------------------------- #
+# Clubs & academics
+# --------------------------------------------------------------------------- #
+
+@mcp.tool()
+async def get_club(club: str, info: Literal["info", "members"] = "info"):
+    """Club details, or its member list. club: name or slug.
+
+    info: info (description, association, foyer room, links, events) | members.
+    """
+    data, note = await client.resolve_club(club)
+    if not data:
+        return note
+
+    out = [f"{data['name']} ({data.get('slug') or '?'})"]
+    if note:
+        out.append(note)
+
+    if info == "info":
+        out.append(
+            _fields(
+                ("type", data.get("type") or "club"),
+                ("association", data.get("association_of_origin")),
+                ("foyer", data.get("foyer_room")),
+            )
         )
-        res.append(f"{i + 1}. **{u_name}** --(*{edge_label}*)--> **{v_name}**")
+        if data.get("description"):
+            out.append(data["description"])
+        if data.get("links"):
+            out.append(
+                "links: " + "; ".join(f"{ln['name']} {ln['url']}" for ln in data["links"])
+            )
+        if data.get("events"):
+            out.append(
+                _block(
+                    "events",
+                    [
+                        f"{datetime.fromisoformat(e['start_time']):%Y-%m-%d %H:%M} {e['name']}"
+                        + (f" @ {e['room']}" if e.get("room") else "")
+                        for e in data["events"]
+                    ],
+                    10,
+                )
+            )
+        return "\n".join(line for line in out if line)
 
-    return "\n".join(res)
+    members = data.get("members") or []
+    if not members:
+        return f"{data['name']}: no member roster."
+
+    board = [m for m in members if m.get("is_mandat")]
+    regular = [m for m in members if not m.get("is_mandat")]
+    if board:
+        out.append(
+            "board: " + "; ".join(f"{_who(m)} ({m.get('role') or 'officer'})" for m in board)
+        )
+    if regular:
+        out.append(_block("members", [_who(m) for m in regular]))
+    return "\n".join(line for line in out if line)
 
 
 @mcp.tool()
-async def where_is_student(
-    trombint_id: str, datetime_str: Optional[str] = None
-):
-    """
-    Infer a student's location (classroom or apartment) at a given datetime (ISO format YYYY-MM-DDTHH:MM:SS) or current time.
-    """
-    student_id = await client.find_student_id(trombint_id)
-    if not student_id:
-        return f"Student '{trombint_id}' not found."
+async def get_class_roster(group: str):
+    """List students in a class or promotion group, e.g. 'TSP_INF1' or 'IMT_L3'."""
+    groups = await client.get("/class-groups")
+    needle = group.lower()
+    matched = next((g for g in groups if needle in g["name"].lower()), None)
+    if not matched:
+        return f"No class group matches '{group}'."
 
-    student_data = await client.get(f"/students/{student_id}")
-    apt = student_data.get("apartment") or "Unknown Apartment"
-    full_name = f"{student_data.get('first_name', '')} {student_data.get('last_name', '')}"
+    data = await client.get(f"/class-groups/{matched['id']}")
+    members = data.get("members") or []
+    if not members:
+        return f"{data['name']}: no students."
 
-    if datetime_str:
-        try:
-            target_dt = datetime.fromisoformat(datetime_str)
-        except ValueError:
-            return f"Invalid ISO datetime format: '{datetime_str}'."
-    else:
-        target_dt = datetime.now()
+    return _block(data["name"], [_who(m) for m in members], 60)
 
-    target_date = target_dt.strftime("%Y-%m-%d")
 
-    # Query schedule for that date
-    payload = {
-        "student_ids": [student_id],
-        "start_date": target_date,
-        "end_date": target_date,
-    }
-    events_data = await client.post("/agenda/compare", json=payload)
-    events = events_data.get(str(student_id), [])
+# --------------------------------------------------------------------------- #
+# Housing & campus
+# --------------------------------------------------------------------------- #
 
-    active_event = None
-    for e in events:
-        st = datetime.fromisoformat(e["start_time"])
-        et = datetime.fromisoformat(e["end_time"])
-        if st <= target_dt <= et:
-            active_event = e
-            break
+@mcp.tool()
+async def get_apartment_info(apartment: str):
+    """Specs of a Maisel apartment by its code, e.g. '7413': floor, type, size, price, aid."""
+    details = await client.get("/students/apartments/details")
+    apt = details.get(apartment.upper())
+    if not apt:
+        return f"No details for apartment {apartment}."
 
-    dt_formatted = target_dt.strftime("%Y-%m-%d %H:%M")
-    if active_event:
-        room = active_event.get("room") or "Classroom (Unspecified)"
-        return (
-            f"# Location Inference for {full_name} ({trombint_id})\n"
-            f"- **Time**: {dt_formatted}\n"
-            f"- **Status**: IN CLASS\n"
-            f"- **Class**: {active_event['name']} ({active_event.get('type', 'Course')})\n"
-            f"- **Location**: {room}"
-        )
-    else:
-        return (
-            f"# Location Inference for {full_name} ({trombint_id})\n"
-            f"- **Time**: {dt_formatted}\n"
-            f"- **Status**: NO ACTIVE CLASS\n"
-            f"- **Inferred Location**: Apartment **{apt}** (Maisel Residence)"
-        )
+    return f"apt {apartment}: " + _fields(
+        ("building", apt.get("Bâtiment")),
+        ("floor", apt.get("Etage")),
+        ("type", apt.get("Type")),
+        ("size", apt.get("Superficie")),
+        ("price", apt.get("Tarif")),
+        ("aid scholarship", apt.get("Allocation boursier")),
+        ("aid standard", apt.get("Allocation non boursier")),
+    )
 
 
 @mcp.tool()
-async def get_student_notes(trombint_id: str):
-    """
-    Get 'Media' entries (quotes, funny notes) about a student.
-    """
-    student_id = await client.find_student_id(trombint_id)
-    if not student_id:
-        return f"Student '{trombint_id}' not found."
-
-    data = await client.get(f"/students/{student_id}/media")
-    # Only show NOTES/TEXT type media
-    notes = [m for m in data if m.get("type") == "NOTE" or m.get("content")]
-
-    if not notes:
-        return f"No notes found for {trombint_id}."
-
-    res = [f"# Notes about {trombint_id}"]
-    for n in notes:
-        author = n.get("author_name") or "Anonymous"
-        res.append(f'> "{n["content"]}"\n— *{author}*')
-
-    return "\n".join(res)
-
-
-@mcp.tool()
-async def get_laundry_status(building: Optional[str] = None):
-    """
-    Check real-time washer/dryer availability. Pass `building` (e.g. 'U3') to
-    check one building; omit it to check all laundry-equipped buildings.
-    """
-    params = {"building": building} if building else None
-    data = await client.get("/laundry/status", params=params)
+async def get_laundry_status(building: str = ""):
+    """Washer/dryer availability. building e.g. 'U3'; omit it for every building."""
+    data = await client.get(
+        "/laundry/status", params={"building": building} if building else None
+    )
     if not data:
         return "Laundry status unavailable."
 
-    res = ["# Laundry Status"]
+    out = []
     for bldg, machines in data.items():
         if not machines:
             continue
-        res.append(f"\n## {bldg.upper()}")
-        for m in machines:
-            machine_type = "Dryer" if m.get("machine_type") == "sl" else "Washer"
-            status = "BUSY" if m.get("started_at") else "FREE"
-            res.append(f"- Machine {m.get('machine_nbr')} ({machine_type}): {status}")
+        # Two lines per building listing machine numbers, rather than one line per machine.
+        dryers = [m for m in machines if m.get("machine_type") == "sl"]
+        washers = [m for m in machines if m.get("machine_type") != "sl"]
+        for kind, group in (("washers", washers), ("dryers", dryers)):
+            if not group:
+                continue
+            free = [str(m.get("machine_nbr")) for m in group if not m.get("started_at")]
+            busy = [str(m.get("machine_nbr")) for m in group if m.get("started_at")]
+            out.append(
+                f"{bldg.upper()} {kind}: "
+                + _fields(("free", ",".join(free)), ("busy", ",".join(busy)))
+            )
 
-    if len(res) == 1:
-        return "Laundry status unavailable."
-    return "\n".join(res)
-
-
-@mcp.tool()
-async def get_map_location(query: Optional[str] = None):
-    """
-    List campus residential buildings and their floors. Pass `query` (e.g. 'U3') to filter
-    to a single building; omit it to list all buildings.
-
-    For a specific student's apartment, use `get_student_profile` or `where_is_student` instead —
-    this tool only covers building/floor structure, not individual rooms or occupants.
-    """
-    data = await client.get("/maps/buildings")
-    if not data:
-        return "No building data available."
-
-    if query:
-        matched = {b: floors for b, floors in data.items() if query.lower() in b.lower()}
-        if not matched:
-            return f"No building found matching '{query}'."
-        data = matched
-
-    res = ["# Buildings"]
-    for building, floors in data.items():
-        res.append(f"- **{building}**: floors {', '.join(floors)}")
-    return "\n".join(res)
+    return "\n".join(out) if out else "Laundry status unavailable."
 
 
 @mcp.tool()
-async def list_rooms():
+async def list_reference(kind: Literal["rooms", "buildings", "relationship_types"]):
+    """List fixed reference values.
+
+    rooms: room names usable with the room tools. buildings: residences and their floors.
+    relationship_types: the categories used by get_student(info='relations').
     """
-    List all distinct room names found in the class schedule (useful to disambiguate a room
-    before calling `get_room_schedule` or checking `find_available_rooms`).
+    if kind == "rooms":
+        rooms = await client.get("/agenda/rooms/list")
+        return _block("rooms", sorted(rooms), 80) if rooms else "rooms: none"
+
+    if kind == "buildings":
+        data = await client.get("/maps/buildings")
+        if not data:
+            return "buildings: none"
+        return "\n".join(f"{b}: floors {', '.join(floors)}" for b, floors in data.items())
+
+    types = await client.get("/relationship-types")
+    if not types:
+        return "relationship types: none"
+    return "relationship types: " + "; ".join(t["name"] for t in types)
+
+
+# --------------------------------------------------------------------------- #
+# Schedules & rooms
+# --------------------------------------------------------------------------- #
+
+async def _agenda(student_ids: List[str], date: str) -> Dict[str, Any]:
+    return await client.post(
+        "/agenda/compare",
+        json={"student_ids": student_ids, "start_date": date, "end_date": date},
+    )
+
+
+def _today() -> str:
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+@mcp.tool()
+async def get_student_schedule(student: str, date: str = ""):
+    """A student's classes on one date. date: YYYY-MM-DD, default today."""
+    student_id, who = await client.resolve_student(student)
+    if not student_id:
+        return who
+
+    day = date or _today()
+    events = (await _agenda([student_id], day)).get(str(student_id), [])
+    if not events:
+        return f"{who} has no class on {day}."
+
+    return _block(
+        f"{who} {day}",
+        [
+            f"{_hhmm(e['start_time'])}-{_hhmm(e['end_time'])} {e['name']} ({e['type']})"
+            + (f" @ {e['room']}" if e.get("room") else "")
+            for e in events
+        ],
+    )
+
+
+@mcp.tool()
+async def find_common_free_slots(students: List[str], date: str = ""):
+    """Time slots free for every listed student, between 08:00 and 20:00.
+
+    students: TrombintIDs or full names. date: YYYY-MM-DD, default today.
     """
-    rooms = await client.get("/agenda/rooms/list")
-    if not rooms:
-        return "No rooms found."
-    return "# Rooms\n" + "\n".join(f"- {r}" for r in rooms)
+    if not students:
+        return "Give at least one student."
+
+    day = date or _today()
+    resolved = await asyncio.gather(*(client.resolve_student(s) for s in students))
+
+    student_ids = [sid for sid, _ in resolved if sid]
+    names = [name for sid, name in resolved if sid]
+    missing = [ref for ref, (sid, _) in zip(students, resolved) if not sid]
+    if not student_ids:
+        return "None of those students were found."
+
+    agenda = await _agenda(student_ids, day)
+
+    day_start, day_end = 8 * 60, 20 * 60
+    busy = []
+    for sid in student_ids:
+        for e in agenda.get(str(sid), []):
+            st = datetime.fromisoformat(e["start_time"])
+            et = datetime.fromisoformat(e["end_time"])
+            s_min = max(day_start, st.hour * 60 + st.minute)
+            e_min = min(day_end, et.hour * 60 + et.minute)
+            if s_min < e_min:
+                busy.append((s_min, e_min))
+
+    busy.sort()
+    merged: List[Tuple[int, int]] = []
+    for interval in busy:
+        if not merged or merged[-1][1] < interval[0]:
+            merged.append(interval)
+        else:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], interval[1]))
+
+    free: List[Tuple[int, int]] = []
+    curr = day_start
+    for b_start, b_end in merged:
+        if b_start > curr:
+            free.append((curr, b_start))
+        curr = max(curr, b_end)
+    if curr < day_end:
+        free.append((curr, day_end))
+
+    out = [f"free {day} for {', '.join(names)}:"]
+    if missing:
+        out.append(f"not found: {', '.join(missing)}")
+    if not free:
+        out.append("no common slot between 08:00 and 20:00")
+    else:
+        out += [
+            f"{s // 60:02d}:{s % 60:02d}-{e // 60:02d}:{e % 60:02d} ({e - s}m)" for s, e in free
+        ]
+    return "\n".join(out)
+
+
+@mcp.tool()
+async def where_is_student(student: str, at: str = ""):
+    """Infer where a student is: their classroom if they have a class, else their apartment.
+
+    at: ISO datetime YYYY-MM-DDTHH:MM:SS, default now.
+    """
+    student_id, who = await client.resolve_student(student)
+    if not student_id:
+        return who
+
+    if at:
+        try:
+            target = datetime.fromisoformat(at)
+        except ValueError:
+            return f"Invalid ISO datetime '{at}'."
+    else:
+        target = datetime.now()
+
+    data, agenda = await asyncio.gather(
+        client.get(f"/students/{student_id}"),
+        _agenda([student_id], target.strftime("%Y-%m-%d")),
+    )
+
+    stamp = target.strftime("%Y-%m-%d %H:%M")
+    for e in agenda.get(str(student_id), []):
+        if datetime.fromisoformat(e["start_time"]) <= target <= datetime.fromisoformat(e["end_time"]):
+            room = e.get("room") or "unspecified room"
+            return f"{who} at {stamp}: in class {e['name']} ({e.get('type', 'course')}) in {room}"
+
+    apt = data.get("apartment")
+    place = f"apartment {apt} (Maisel)" if apt else "unknown (no apartment on file)"
+    return f"{who} at {stamp}: no class, likely at {place}"
 
 
 @mcp.tool()
 async def find_available_rooms(start_time: str, end_time: str):
-    """
-    Find rooms with no scheduled class between `start_time` and `end_time`
-    (ISO datetimes, e.g. '2026-07-28T14:00:00' / '2026-07-28T16:00:00').
-    """
+    """Rooms with no class scheduled in a window. ISO datetimes, e.g. '2026-07-28T14:00:00'."""
     rooms = await client.get(
         "/agenda/rooms/available", params={"start_time": start_time, "end_time": end_time}
     )
     if not rooms:
-        return f"No rooms available between {start_time} and {end_time}."
-    return f"# Available Rooms ({start_time} - {end_time})\n" + "\n".join(
-        f"- {r}" for r in rooms
-    )
+        return f"No room free between {start_time} and {end_time}."
+    return _block(f"free {start_time} to {end_time}", sorted(rooms), 60)
 
 
 @mcp.tool()
 async def get_room_schedule(room_query: str, start_date: str, end_date: str):
-    """
-    Get the class schedule for rooms matching `room_query` (substring match) between
-    `start_date` and `end_date` (YYYY-MM-DD, e.g. '2026-07-28').
-    """
+    """Classes booked in rooms matching room_query (substring), between two YYYY-MM-DD dates."""
     events = await client.get(
         "/agenda/rooms/occupancy",
         params={"room_query": room_query, "start_date": start_date, "end_date": end_date},
     )
     if not events:
-        return f"No events found for rooms matching '{room_query}' between {start_date} and {end_date}."
+        return f"Nothing scheduled in rooms matching '{room_query}' from {start_date} to {end_date}."
 
-    res = [f"# Schedule for rooms matching '{room_query}' ({start_date} - {end_date})"]
-    for e in events:
-        start = datetime.fromisoformat(e["start_time"]).strftime("%Y-%m-%d %H:%M")
-        end = datetime.fromisoformat(e["end_time"]).strftime("%H:%M")
-        res.append(f"- {start}-{end} @ **{e['room']}**: {e['name']} ({e['type']})")
-    return "\n".join(res)
-
-
-@mcp.tool()
-async def list_relationship_types():
-    """
-    List the valid relationship categories (e.g. friend, roommate, partner) used by
-    `get_student_relationships` and `find_shortest_path`.
-    """
-    types = await client.get("/relationship-types")
-    if not types:
-        return "No relationship types found."
-    return "# Relationship Types\n" + "\n".join(f"- {t['name']}" for t in types)
+    return _block(
+        f"{room_query} {start_date} to {end_date}",
+        [
+            f"{datetime.fromisoformat(e['start_time']):%Y-%m-%d %H:%M}-{_hhmm(e['end_time'])} "
+            f"{e['room']} {e['name']} ({e['type']})"
+            for e in events
+        ],
+    )
