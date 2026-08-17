@@ -315,6 +315,106 @@ class EventPresenter(SQLModel, table=True):
     role: str = Field(default="Professeur")
 
 
+# ── Academics (Course Catalog) ───────────────────────────────────────────────
+# The published course catalogs of the three schools (tsp / imt-bs / lsh),
+# harvested from the public "enseignements" sites via the intllabus SDK. One
+# row per course sheet, already merged across the three endpoints (the same id
+# is more or less complete depending on which school's fiche is queried).
+# Nothing here is linked to Person/Event yet: teacher names are kept as raw
+# unresolved JSON (same approach as Event.presenters_raw) so the resolution
+# pass can be added later without touching this schema.
+
+class Course(SQLModel, table=True):
+    __tablename__ = "courses"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    source_id: Optional[uuid.UUID] = Field(default=None, foreign_key="data_sources.id", index=True)
+    external_id: str = Field(index=True)  # catalog id, e.g. "10279"
+
+    code: Optional[str] = Field(default=None, index=True)  # e.g. "CSC 4101" — NOT unique in the catalog
+    title: str = Field(index=True)
+    url: Optional[str] = Field(default=None)
+
+    # Which school's catalog *lists* this course. The three listings are almost
+    # disjoint, so this is provenance, not a content field (see the scraper).
+    schools: List[str] = Field(default_factory=list, sa_column=Column(JSON))
+
+    # Taxonomy / filterable facets
+    niveau: Optional[str] = Field(default=None, index=True)  # L1..L3 / M1 / M2 / MS / MSc / MBA / PhD
+    graduate: Optional[str] = Field(default=None)  # UnderGraduate | Graduate | PostGraduate
+    domaine: Optional[str] = Field(default=None, index=True)
+    programme: Optional[str] = Field(default=None)
+    langue_enseignement: Optional[str] = Field(default=None)
+    periode: Optional[str] = Field(default=None, index=True)  # P1..P4 / ST
+    lieu: Optional[str] = Field(default=None, index=True)
+    credits_ects: Optional[float] = Field(default=None, index=True)
+    heures_programmees: Optional[float] = Field(default=None)
+    coefficient: Optional[str] = Field(default=None)
+
+    departements: List[str] = Field(default_factory=list, sa_column=Column(JSON))
+
+    organisation: Optional[str] = Field(default=None, sa_column=Column(Text))
+    population: Optional[str] = Field(default=None, sa_column=Column(Text))
+    mode_calcul_moyenne: Optional[str] = Field(default=None, sa_column=Column(Text))
+    mode_calcul_credits: Optional[str] = Field(default=None, sa_column=Column(Text))
+
+    introduction: Optional[str] = Field(default=None, sa_column=Column(Text))
+    objectif: Optional[str] = Field(default=None, sa_column=Column(Text))
+    contenu: Optional[str] = Field(default=None, sa_column=Column(Text))
+    evaluations: Optional[str] = Field(default=None, sa_column=Column(Text))
+    plan_cours: Optional[str] = Field(default=None, sa_column=Column(Text))
+    charge_travail_etudiant: Optional[str] = Field(default=None, sa_column=Column(Text))
+    description: Optional[str] = Field(default=None, sa_column=Column(Text))
+
+    # Long tail of the fiche (prerequis, bibliographie, motcles, semester,
+    # competencesCDIO…): ~20 optional sections, present on a minority of
+    # courses and different from one school to the next.
+    attributes: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+
+    is_active: bool = Field(default=True, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now, sa_column_kwargs={"onupdate": utc_now})
+    last_seen_at: datetime = Field(default_factory=utc_now)
+
+    __table_args__ = (
+        UniqueConstraint("source_id", "external_id", name="uq_course_source_external_id"),
+    )
+
+    source: Optional["DataSource"] = Relationship()
+    teachers: list["CourseTeacher"] = Relationship(
+        back_populates="course",
+        sa_relationship_kwargs={
+            "cascade": "all, delete-orphan",
+            "order_by": "CourseTeacher.position",
+        },
+    )
+
+
+class CourseTeacher(SQLModel, table=True):
+    """A teacher as *named on the course sheet*, deliberately without a FK to
+    `people`: the catalog publishes staff who very often have no Person row
+    (professors are not in the trombint student scrape).
+
+    Instead of resolving once at ingest time — which would silently keep a
+    course unlinked forever if the person is created afterwards — the link is
+    made at read time by matching `name_key` (see api.common.person_name_key).
+    Adding the Person later, by any route, makes the link appear on its own."""
+    __tablename__ = "course_teachers"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    course_id: uuid.UUID = Field(
+        sa_column=Column(PG_UUID, ForeignKey("courses.id", ondelete="CASCADE"), index=True)
+    )
+    role: str = Field(default="TEACHER")  # RESPONSABLE | TEACHING_TEAM
+    name: str  # exactly as published on the fiche
+    # Accent/case/order-insensitive key ("Jean-Pierre DURAND" and
+    # "durand jean pierre" share one), indexed so a Person page can look up
+    # everything they teach in one hit.
+    name_key: str = Field(index=True)
+    url: Optional[str] = Field(default=None)  # trombi link carried by the fiche
+    position: int = Field(default=0)
+
+    course: "Course" = Relationship(back_populates="teachers")
+
+
 # ── Human Intelligence (OSINT Research) ──────────────────────────────────────
 
 class SocialLink(SQLModel, table=True):

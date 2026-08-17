@@ -12,6 +12,7 @@ from sqlalchemy.orm import aliased, selectinload
 from api.common import (
     apartment_code_subquery,
     get_active_housing,
+    get_taught_courses,
     get_trombint_id,
     promo_name_subquery,
     school_name_subquery,
@@ -321,7 +322,8 @@ async def get_student(
                 "author_name": m.author_name,
                 "uploaded_at": m.uploaded_at.isoformat()
             } for m in student.media
-        ]
+        ],
+        "taught_courses": await get_taught_courses(db, student),
     }
 
 

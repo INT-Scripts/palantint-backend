@@ -18,6 +18,7 @@ DATA_SOURCES = [
     {"code": "maisel", "kind": "SCRAPER", "label": "MaisEL", "description": "Housing/apartment allocation scrape."},
     {"code": "groupes", "kind": "SCRAPER", "label": "Groupes", "description": "Class-group roster scrape."},
     {"code": "clubs", "kind": "SCRAPER", "label": "Clubs", "description": "Club roster and metadata scrape."},
+    {"code": "intllabus", "kind": "SCRAPER", "label": "Catalogue des cours", "description": "Public course catalog scrape (tsp / imt-bs / lsh course sheets)."},
     {"code": "vault_manual", "kind": "MANUAL", "label": "Vault (Manual OSINT)", "description": "Manually researched OSINT data restored from the vault export."},
     {"code": "admin_panel", "kind": "ADMIN", "label": "Admin Panel", "description": "Data entered or edited directly by an admin through the backend."},
 ]

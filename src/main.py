@@ -11,6 +11,7 @@ from api.private.agenda import router as agenda_router
 from api.private.auth import router as auth_router
 from api.private.class_groups import router as class_groups_router
 from api.private.clubs import router as clubs_router
+from api.private.courses import router as courses_router
 
 # Private router and dependencies
 from api.private.deps import require_user, require_user_query_token
@@ -27,6 +28,7 @@ from api.private.assets import router as assets_router
 from api.private.notifications import router as notifications_router
 from api.public.class_groups import router as pub_class_groups_router
 from api.public.clubs import router as pub_clubs_router
+from api.public.courses import router as pub_courses_router
 from api.public.laundry import router as pub_laundry_router
 from api.public.maps import router as pub_maps_router
 from api.public.search import router as pub_search_router
@@ -92,6 +94,7 @@ private_router.include_router(pay5vend_router)
 private_router.include_router(admin_router)
 private_router.include_router(students_router)
 private_router.include_router(clubs_router)
+private_router.include_router(courses_router)
 private_router.include_router(agenda_router)
 private_router.include_router(relationships_router)
 private_router.include_router(media_router)
@@ -110,6 +113,7 @@ public_router = APIRouter(
     dependencies=[Depends(rate_limit_dep)]
 )
 public_router.include_router(pub_clubs_router)
+public_router.include_router(pub_courses_router)
 public_router.include_router(pub_class_groups_router)
 public_router.include_router(pub_students_router)
 public_router.include_router(pub_laundry_router)
