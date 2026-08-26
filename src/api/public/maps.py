@@ -1,11 +1,14 @@
-from typing import Dict, List, Any
+import json
+import os
+from typing import Dict, List, Any, Tuple
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
+from core.config import settings
 from db.database import get_db
-from db.models import Location, MapMetadata
+from db.models import Location, MapMetadata, ThreeDConfig
 
 router = APIRouter(prefix="/maps", tags=["public-maps"])
 
@@ -17,6 +20,30 @@ class Pillar(BaseModel):
 
 class MapMetadataSchema(BaseModel):
     pillars: List[Pillar] = []
+
+
+class BuildingCoordinates(BaseModel):
+    lat: float = 0.0
+    lng: float = 0.0
+
+
+class BuildingDetails(BaseModel):
+    # Public-safe subset only — no occupant/tenant data belongs here.
+    address: str = ""
+    coordinates: BuildingCoordinates = BuildingCoordinates()
+
+
+class BuildingMarker(BaseModel):
+    id: str = ""
+    bldg_id: str
+    label: str = ""
+    footprint: List[Tuple[float, float, float]] = []
+    details: BuildingDetails = BuildingDetails()
+
+
+class ThreeDConfigSchema(BaseModel):
+    tile_mappings: Dict[str, str] = {}
+    markers: List[BuildingMarker] = []
 
 
 BUILDING_FLOORS: Dict[str, List[str]] = {
@@ -104,3 +131,47 @@ async def get_public_building_metadata(
             "pillars": m.pillars
         }
     return results
+
+
+@router.get("/3d-tiles")
+async def get_public_3d_tiles():
+    """Public list of scanned campus tile GLTFs. The files themselves are
+    already served without auth via the /assets static mount — this endpoint
+    just discovers and orders them, mirroring api/private/maps.py's version."""
+    tiles_dir = settings.ASSETS_DIR / "3d"
+    if not os.path.exists(tiles_dir):
+        return {"tiles": []}
+
+    files = [f for f in os.listdir(tiles_dir) if f.endswith(".gltf")]
+    try:
+        files.sort(key=lambda x: int(x.replace('tile_', '').replace('.gltf', '')))
+    except Exception:
+        files.sort()
+
+    urls = [f"/api/assets/3d/{f}" for f in files]
+    return {"tiles": urls}
+
+
+@router.get("/3d-config", response_model=ThreeDConfigSchema)
+async def get_public_3d_config(db: AsyncSession = Depends(get_db)):
+    """Public-safe projection of the 3D map config: tile mappings and building
+    footprints/addresses only — no wireframe transforms or occupant data,
+    since those are only meaningful together with the private floor/occupant
+    endpoints."""
+    stmt = select(ThreeDConfig).where(ThreeDConfig.key == "default")
+    res = await db.execute(stmt)
+    cfg = res.scalars().first()
+    if cfg and (cfg.tile_mappings or cfg.markers):
+        return ThreeDConfigSchema(tile_mappings=cfg.tile_mappings, markers=cfg.markers)
+
+    export_path = settings.DATA_ROOT / "exports" / "3d_config.json"
+    if os.path.exists(export_path):
+        with open(export_path, 'r', encoding='utf-8') as f:
+            return ThreeDConfigSchema(**json.load(f))
+
+    config_path = settings.ASSETS_DIR / "3d" / "config.json"
+    if os.path.exists(config_path):
+        with open(config_path, 'r', encoding='utf-8') as f:
+            return ThreeDConfigSchema(**json.load(f))
+
+    return ThreeDConfigSchema()
