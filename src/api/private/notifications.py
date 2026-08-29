@@ -4,7 +4,7 @@ import httpx
 from datetime import datetime
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.future import select
@@ -23,14 +23,13 @@ class LaundrySubscribeRequest(BaseModel):
 
 
 class NotificationResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     title: str
     message: str
     is_read: bool
     created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 async def get_or_create_machine_slot(db: AsyncSession, building: str, machine_nbr: int) -> Location:
