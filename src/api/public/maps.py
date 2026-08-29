@@ -79,27 +79,38 @@ async def get_public_map_metadata(
 ):
     """Get public structural pillar alignment metadata for a given floor."""
     building = await _get_building_location(db, building_id)
-    if not building:
-        return MapMetadataSchema()
-
-    floor_result = await db.execute(
-        select(Location).where(
-            Location.kind == "FLOOR",
-            Location.parent_id == building.id,
-            Location.code == floor_id,
+    if building:
+        floor_result = await db.execute(
+            select(Location).where(
+                Location.kind == "FLOOR",
+                Location.parent_id == building.id,
+                Location.code == floor_id,
+            )
         )
-    )
-    floor = floor_result.scalars().first()
-    if not floor:
-        return MapMetadataSchema()
+        floor = floor_result.scalars().first()
+        if floor:
+            stmt = select(MapMetadata).where(MapMetadata.location_id == floor.id)
+            result = await db.execute(stmt)
+            meta = result.scalars().first()
+            if meta and meta.pillars:
+                return MapMetadataSchema(
+                    pillars=[Pillar(**p) for p in meta.pillars]
+                )
 
-    stmt = select(MapMetadata).where(MapMetadata.location_id == floor.id)
-    result = await db.execute(stmt)
-    meta = result.scalars().first()
-    if meta and meta.pillars:
-        return MapMetadataSchema(
-            pillars=[Pillar(**p) for p in meta.pillars]
-        )
+    # Fallback to vault file
+    export_path = settings.DATA_ROOT / "exports" / "maps.json"
+    if os.path.exists(export_path):
+        try:
+            with open(export_path, 'r', encoding='utf-8') as f:
+                maps_data = json.load(f)
+                for item in maps_data:
+                    if item.get("building_id") == building_id and item.get("floor_id") == floor_id:
+                        return MapMetadataSchema(
+                            pillars=[Pillar(**p) for p in item.get("pillars", [])]
+                        )
+        except Exception:
+            pass
+
     return MapMetadataSchema()
 
 
@@ -109,27 +120,36 @@ async def get_public_building_metadata(
     db: AsyncSession = Depends(get_db)
 ):
     """Get public structural pillar metadata for all floors of a building."""
-    building = await _get_building_location(db, building_id)
-    if not building:
-        return {}
-
-    floors_result = await db.execute(
-        select(Location).where(Location.kind == "FLOOR", Location.parent_id == building.id)
-    )
-    floors = {f.id: f.code for f in floors_result.scalars().all()}
-    if not floors:
-        return {}
-
-    metas_result = await db.execute(
-        select(MapMetadata).where(MapMetadata.location_id.in_(floors.keys()))
-    )
-    metas = metas_result.scalars().all()
-
     results = {}
-    for m in metas:
-        results[floors[m.location_id]] = {
-            "pillars": m.pillars
-        }
+    building = await _get_building_location(db, building_id)
+    if building:
+        floors_result = await db.execute(
+            select(Location).where(Location.kind == "FLOOR", Location.parent_id == building.id)
+        )
+        floors = {f.id: f.code for f in floors_result.scalars().all()}
+        if floors:
+            metas_result = await db.execute(
+                select(MapMetadata).where(MapMetadata.location_id.in_(floors.keys()))
+            )
+            metas = metas_result.scalars().all()
+            for m in metas:
+                results[floors[m.location_id]] = {
+                    "pillars": m.pillars
+                }
+
+    export_path = settings.DATA_ROOT / "exports" / "maps.json"
+    if os.path.exists(export_path):
+        try:
+            with open(export_path, 'r', encoding='utf-8') as f:
+                maps_data = json.load(f)
+                for item in maps_data:
+                    b_code = item.get("building_id")
+                    f_code = item.get("floor_id")
+                    if b_code == building_id and f_code and f_code not in results:
+                        results[f_code] = {"pillars": item.get("pillars", [])}
+        except Exception:
+            pass
+
     return results
 
 

@@ -125,16 +125,29 @@ async def get_map_metadata(
     current_user: User = Depends(require_user)
 ):
     floor = await _get_floor_location(db, building_id, floor_id)
-    if not floor:
-        return MapMetadataSchema()
+    if floor:
+        stmt = select(MapMetadata).where(MapMetadata.location_id == floor.id)
+        result = await db.execute(stmt)
+        meta = result.scalars().first()
+        if meta and meta.pillars:
+            return MapMetadataSchema(
+                pillars=[Pillar(**p) for p in meta.pillars]
+            )
 
-    stmt = select(MapMetadata).where(MapMetadata.location_id == floor.id)
-    result = await db.execute(stmt)
-    meta = result.scalars().first()
-    if meta:
-        return MapMetadataSchema(
-            pillars=[Pillar(**p) for p in meta.pillars]
-        )
+    # Fallback to vault file
+    export_path = settings.DATA_ROOT / "exports" / "maps.json"
+    if os.path.exists(export_path):
+        try:
+            with open(export_path, 'r', encoding='utf-8') as f:
+                maps_data = json.load(f)
+                for item in maps_data:
+                    if item.get("building_id") == building_id and item.get("floor_id") == floor_id:
+                        return MapMetadataSchema(
+                            pillars=[Pillar(**p) for p in item.get("pillars", [])]
+                        )
+        except Exception:
+            pass
+
     return MapMetadataSchema()
 
 
@@ -150,20 +163,52 @@ async def save_map_metadata(
 
     floor = await _get_or_create_floor_location(db, building_id, floor_id)
 
-    stmt = insert(MapMetadata).values(
-        location_id=floor.id,
-        pillars=pillars_data
-    )
+    stmt = select(MapMetadata).where(MapMetadata.location_id == floor.id)
+    result = await db.execute(stmt)
+    meta = result.scalars().first()
+    if not meta:
+        meta = MapMetadata(
+            id=uuid.uuid4(),
+            location_id=floor.id,
+            pillars=pillars_data
+        )
+        db.add(meta)
+    else:
+        meta.pillars = pillars_data
 
-    upsert_stmt = stmt.on_conflict_do_update(
-        index_elements=["location_id"],
-        set_={
-            "pillars": stmt.excluded.pillars
-        }
-    )
-
-    await db.execute(upsert_stmt)
     await db.commit()
+
+    # Mirror to vault export file so calibrations persist across runs/re-syncs
+    export_dir = settings.DATA_ROOT / "exports"
+    os.makedirs(export_dir, exist_ok=True)
+    maps_path = export_dir / "maps.json"
+    maps_data = []
+    if os.path.exists(maps_path):
+        try:
+            with open(maps_path, "r", encoding="utf-8") as f:
+                maps_data = json.load(f)
+        except Exception:
+            maps_data = []
+
+    found = False
+    for item in maps_data:
+        if item.get("building_id") == building_id and item.get("floor_id") == floor_id:
+            item["pillars"] = pillars_data
+            if "id" not in item:
+                item["id"] = str(meta.id)
+            found = True
+            break
+    if not found:
+        maps_data.append({
+            "id": str(meta.id),
+            "building_id": building_id,
+            "floor_id": floor_id,
+            "pillars": pillars_data
+        })
+
+    with open(maps_path, "w", encoding="utf-8") as f:
+        json.dump(maps_data, f, indent=4, ensure_ascii=False)
+
     return {"status": "success"}
 
 
@@ -279,27 +324,36 @@ async def get_building_metadata(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_user)
 ):
-    building = await _get_building_location(db, building_id)
-    if not building:
-        return {}
-
-    floors_result = await db.execute(
-        select(Location).where(Location.kind == "FLOOR", Location.parent_id == building.id)
-    )
-    floors = {f.id: f.code for f in floors_result.scalars().all()}
-    if not floors:
-        return {}
-
-    metas_result = await db.execute(
-        select(MapMetadata).where(MapMetadata.location_id.in_(floors.keys()))
-    )
-    metas = metas_result.scalars().all()
-
     results = {}
-    for m in metas:
-        results[floors[m.location_id]] = {
-            "pillars": m.pillars
-        }
+    building = await _get_building_location(db, building_id)
+    if building:
+        floors_result = await db.execute(
+            select(Location).where(Location.kind == "FLOOR", Location.parent_id == building.id)
+        )
+        floors = {f.id: f.code for f in floors_result.scalars().all()}
+        if floors:
+            metas_result = await db.execute(
+                select(MapMetadata).where(MapMetadata.location_id.in_(floors.keys()))
+            )
+            metas = metas_result.scalars().all()
+            for m in metas:
+                results[floors[m.location_id]] = {
+                    "pillars": m.pillars
+                }
+
+    export_path = settings.DATA_ROOT / "exports" / "maps.json"
+    if os.path.exists(export_path):
+        try:
+            with open(export_path, 'r', encoding='utf-8') as f:
+                maps_data = json.load(f)
+                for item in maps_data:
+                    b_code = item.get("building_id")
+                    f_code = item.get("floor_id")
+                    if b_code == building_id and f_code and f_code not in results:
+                        results[f_code] = {"pillars": item.get("pillars", [])}
+        except Exception:
+            pass
+
     return results
 
 

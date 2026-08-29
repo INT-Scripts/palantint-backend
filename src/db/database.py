@@ -79,6 +79,20 @@ async def init_db():
             # 2. Now initialize SQLModel schema using SQLAlchemy engine
             async with engine.begin() as conn:
                 await conn.run_sync(SQLModel.metadata.create_all)
+                # Drop obsolete global (kind, code) constraint that broke multi-building floors/slots
+                if conn.dialect.name == "postgresql":
+                    from sqlalchemy import text
+                    await conn.execute(text("ALTER TABLE locations DROP CONSTRAINT IF EXISTS uq_location_kind_code;"))
+                    await conn.execute(text("""
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1 FROM pg_constraint WHERE conname = 'uq_location_parent_kind_code'
+                            ) THEN
+                                ALTER TABLE locations ADD CONSTRAINT uq_location_parent_kind_code UNIQUE (parent_id, kind, code);
+                            END IF;
+                        END $$;
+                    """))
             
             # 3. Seed default metadata
             from .seed import seed_default_data

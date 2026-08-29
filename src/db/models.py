@@ -247,7 +247,7 @@ class Location(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now, sa_column_kwargs={"onupdate": utc_now})
 
     __table_args__ = (
-        UniqueConstraint("kind", "code", name="uq_location_kind_code"),
+        UniqueConstraint("parent_id", "kind", "code", name="uq_location_parent_kind_code"),
     )
 
     parent: Optional["Location"] = Relationship(
