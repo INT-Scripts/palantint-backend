@@ -279,6 +279,7 @@ class Event(SQLModel, table=True):
     external_ref: Optional[str] = Field(default=None, unique=True, index=True)
     calendar_id: Optional[str] = Field(default=None, index=True)
     kind: str = Field(default="COURSE")  # COURSE | EXAM | CLUB | EXTERNAL | PERSONAL
+    is_active: bool = Field(default=True, index=True)
     name: str
     start_time: datetime = Field(index=True)
     end_time: datetime
@@ -303,7 +304,7 @@ class EventOrganization(SQLModel, table=True):
 class EventAttendee(SQLModel, table=True):
     __tablename__ = "event_attendees"
     event_id: uuid.UUID = Field(foreign_key="events.id", primary_key=True)
-    person_id: uuid.UUID = Field(foreign_key="people.id", primary_key=True)
+    person_id: uuid.UUID = Field(foreign_key="people.id", primary_key=True, index=True)
 
 
 class EventPresenter(SQLModel, table=True):

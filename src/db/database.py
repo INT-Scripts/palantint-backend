@@ -82,6 +82,9 @@ async def init_db():
                 # Drop obsolete global (kind, code) constraint that broke multi-building floors/slots
                 if conn.dialect.name == "postgresql":
                     from sqlalchemy import text
+                    await conn.execute(text("ALTER TABLE events ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;"))
+                    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_events_is_active ON events (is_active);"))
+                    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_event_attendees_person_id ON event_attendees (person_id);"))
                     await conn.execute(text("ALTER TABLE locations DROP CONSTRAINT IF EXISTS uq_location_kind_code;"))
                     await conn.execute(text("""
                         DO $$

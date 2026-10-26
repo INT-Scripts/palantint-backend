@@ -79,6 +79,21 @@ def event_in_class_groups_clause(class_group_ids_subq):
     )
 
 
+def event_for_person_clause(person_id):
+    attendee_events = select(EventAttendee.event_id).where(EventAttendee.person_id == person_id)
+    has_attendees = select(EventAttendee.event_id).where(EventAttendee.event_id == Event.id).exists()
+    return and_(
+        Event.is_active.is_(True),
+        or_(
+            Event.id.in_(attendee_events),
+            and_(
+                ~has_attendees,
+                event_in_class_groups_clause(student_class_group_ids_subquery(person_id)),
+            ),
+        ),
+    )
+
+
 async def get_event_professors(db: AsyncSession, event: Event) -> Optional[str]:
     """Prefers resolved EventPresenter names, falls back to presenters_raw."""
     result = await db.execute(
@@ -119,15 +134,13 @@ async def compare_agendas(
             if not student:
                 continue
 
-            class_group_ids_subq = student_class_group_ids_subquery(student_id)
-
             stmt = (
                 select(Event)
                 .options(selectinload(Event.organization))
                 .where(
-                    event_in_class_groups_clause(class_group_ids_subq),
+                    event_for_person_clause(student_id),
                     Event.start_time >= dt_start,
-                    Event.end_time <= dt_end,
+                    Event.start_time < dt_end + timedelta(days=1),
                 )
                 .order_by(Event.start_time)
             )
@@ -163,6 +176,7 @@ async def get_all_rooms(
         stmt = (
             select(Location)
             .join(Event, Event.location_id == Location.id)
+            .where(Event.is_active.is_(True))
             .distinct()
         )
         result = await db.execute(stmt)
@@ -190,6 +204,7 @@ async def get_available_rooms(
             select(Location)
             .join(Event, Event.location_id == Location.id)
             .where(
+                Event.is_active.is_(True),
                 or_(
                     and_(Event.start_time <= dt_start, Event.end_time > dt_start),
                     and_(Event.start_time < dt_end, Event.end_time >= dt_end),
@@ -203,7 +218,7 @@ async def get_available_rooms(
         occupied_rooms = set(r for r in (room_label(loc) for loc in result.scalars().all()) if r)
 
         # Get all rooms
-        all_rooms_stmt = select(Location).join(Event, Event.location_id == Location.id).distinct()
+        all_rooms_stmt = select(Location).join(Event, Event.location_id == Location.id).where(Event.is_active.is_(True)).distinct()
         all_rooms_res = await db.execute(all_rooms_stmt)
         all_rooms = set(r for r in (room_label(loc) for loc in all_rooms_res.scalars().all()) if r)
 
@@ -240,7 +255,8 @@ async def get_room_occupancy(
                     Location.name.ilike(f"%{escaped}%"),
                 ),
                 Event.start_time >= dt_start,
-                Event.start_time < dt_end
+                Event.start_time < dt_end,
+                Event.is_active.is_(True),
             )
             .order_by(Event.start_time)
         )
@@ -288,8 +304,7 @@ async def get_student_agenda(
             dt_end = dt_start + timedelta(days=7)
         else:
             dt_end = datetime.strptime(end_date, "%Y-%m-%d")
-
-        class_group_ids_subq = student_class_group_ids_subquery(student_id)
+        end_exclusive = dt_end + timedelta(days=1) if end_date else dt_end
 
         stmt = (
             select(Event)
@@ -298,9 +313,9 @@ async def get_student_agenda(
                 selectinload(Event.location),
             )
             .where(
-                event_in_class_groups_clause(class_group_ids_subq),
+                event_for_person_clause(student_id),
                 Event.start_time >= dt_start,
-                Event.end_time <= dt_end,
+                Event.start_time < end_exclusive,
             )
             .order_by(Event.start_time)
         )
@@ -374,7 +389,7 @@ async def get_agenda_event_details(
             selectinload(Event.organization),
             selectinload(Event.location),
         )
-        .where(Event.id == event_id)
+        .where(Event.id == event_id, Event.is_active.is_(True))
     )
     result = await db.execute(stmt)
     event = result.scalars().first()
@@ -399,17 +414,15 @@ async def get_agenda_event_details(
         group_students_result = await db.execute(group_students_stmt)
         group_students = group_students_result.scalars().all()
 
-    # Get manually linked students (attendees)
-    manual_students_stmt = (
+    # Explicit SI learners take precedence over a broad group roster.
+    attendees_stmt = (
         select(Person)
         .join(EventAttendee, EventAttendee.person_id == Person.id)
         .where(EventAttendee.event_id == event_id)
     )
-    manual_students_result = await db.execute(manual_students_stmt)
-    manual_students = manual_students_result.scalars().all()
-
-    # Combine and deduplicate
-    all_students_dict = {s.id: s for s in (list(group_students) + list(manual_students))}
+    attendees_result = await db.execute(attendees_stmt)
+    attendees = attendees_result.scalars().all()
+    all_students_dict = {s.id: s for s in (attendees or group_students)}
 
     students_data = []
     for s in all_students_dict.values():
