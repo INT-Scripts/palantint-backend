@@ -6,7 +6,6 @@ from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import httpx
-from fastapi import HTTPException
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import AccessToken, TokenVerifier
@@ -34,8 +33,11 @@ class ServiceTokenVerifier(TokenVerifier):
     private API (see api/private/deps.py) — it does not carry per-client identity, it
     simply gates access to the /mcp endpoint itself, which is otherwise unauthenticated.
 
-    Verification attempts are throttled via the same core.rate_limit machinery used by
+    Failed verifications are throttled via the same core.rate_limit machinery used by
     every other credential-checking endpoint in the app (login, refresh), keyed by client IP.
+    Successful ones are not counted: every JSON-RPC message (each tool call,
+    list_tools, notifications…) is a separate POST that re-presents the token, so a bot
+    such as BananaBot would otherwise lock itself out mid-conversation.
     """
 
     def __init__(self, expected_token: str):
@@ -44,11 +46,12 @@ class ServiceTokenVerifier(TokenVerifier):
 
     async def verify_token(self, token: str) -> Optional[AccessToken]:
         try:
-            mcp_auth_limiter.check(get_client_ip(get_http_request()))
+            client_ip: Optional[str] = get_client_ip(get_http_request())
         except RuntimeError:
             # No HTTP request in context (e.g. non-HTTP transport) — nothing to key on.
-            pass
-        except HTTPException:
+            client_ip = None
+
+        if client_ip and mcp_auth_limiter.is_limited(client_ip):
             # verify_token runs inside Starlette's AuthenticationMiddleware, outside
             # FastAPI's exception-handling layer, so a raised HTTPException would
             # surface as a raw 500 rather than 429. Deny instead: this reuses the
@@ -58,6 +61,8 @@ class ServiceTokenVerifier(TokenVerifier):
             return None
 
         if not secrets.compare_digest(token, self._expected_token):
+            if client_ip:
+                mcp_auth_limiter.record(client_ip)
             return None
         return AccessToken(token=token, client_id="mcp-service", scopes=[])
 

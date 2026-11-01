@@ -20,19 +20,33 @@ class _RateLimiter:
         self._hits: dict[str, list[float]] = defaultdict(list)
         self._lock = Lock()
 
+    def _prune(self, key: str, now: float) -> list[float]:
+        window_start = now - self.window_seconds
+        self._hits[key] = [t for t in self._hits[key] if t > window_start]
+        return self._hits[key]
+
     def check(self, key: str) -> None:
         """Raise 429 if the key has exceeded the rate limit."""
         now = time.monotonic()
         with self._lock:
-            window_start = now - self.window_seconds
-            # Prune old entries
-            self._hits[key] = [t for t in self._hits[key] if t > window_start]
-            if len(self._hits[key]) >= self.max_requests:
+            hits = self._prune(key, now)
+            if len(hits) >= self.max_requests:
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                     detail="Too many requests. Please try again later.",
                 )
-            self._hits[key].append(now)
+            hits.append(now)
+
+    def is_limited(self, key: str) -> bool:
+        """Whether the key is over the limit, without counting this call as a hit."""
+        with self._lock:
+            return len(self._prune(key, time.monotonic())) >= self.max_requests
+
+    def record(self, key: str) -> None:
+        """Count one hit against the key, e.g. a failed credential check."""
+        now = time.monotonic()
+        with self._lock:
+            self._prune(key, now).append(now)
 
 
 # Singleton: 5 login attempts per minute per IP
@@ -47,9 +61,10 @@ refresh_limiter = _RateLimiter(max_requests=5, window_seconds=60)
 api_limiter = _RateLimiter(max_requests=60, window_seconds=60)
 
 
-# Singleton: 20 MCP bearer-token verifications per minute per IP.
-# Same purpose as login_limiter (bound credential-guessing attempts),
-# scaled up since legitimate MCP clients reconnect/retry more often than login forms.
+# Singleton: 20 failed MCP bearer-token verifications per minute per IP.
+# Same purpose as login_limiter (bound credential-guessing attempts). Only failures
+# count: the SSE transport re-verifies the token on every JSON-RPC message, so
+# counting successes would lock out a legitimate client after a handful of tool calls.
 mcp_auth_limiter = _RateLimiter(max_requests=20, window_seconds=60)
 
 

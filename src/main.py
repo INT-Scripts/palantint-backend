@@ -45,6 +45,10 @@ settings.ASSETS_DIR.mkdir(parents=True, exist_ok=True)
 settings.MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 settings.PROFILES_DIR.mkdir(parents=True, exist_ok=True)
 
+# Streamable HTTP transport, served at /api/mcp/. Mounted sub-apps don't get their
+# lifespan run, so the app's own lifespan enters it below to start the session manager.
+mcp_app = mcp.http_app(path="/", transport="http")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -55,7 +59,7 @@ async def lifespan(app: FastAPI):
     from api.private.notifications import laundry_notifier_loop
     notifier_task = asyncio.create_task(laundry_notifier_loop())
     
-    async with mcp.lifespan():
+    async with mcp_app.lifespan(mcp_app):
         yield
         
     # Execute on shutdown
@@ -120,7 +124,7 @@ app.mount("/assets", StaticFiles(directory=str(settings.ASSETS_DIR)), name="asse
 app.include_router(public_router)
 
 
-app.mount("/mcp", mcp.http_app(transport="sse"))
+app.mount("/mcp", mcp_app)
 
 
 @app.get("/")
