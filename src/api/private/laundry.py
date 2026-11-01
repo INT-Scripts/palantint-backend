@@ -15,7 +15,7 @@ async def get_laundry_status(
     current_user: User = Depends(require_user),
 ):
     """Aggregate machine status across all (or one) laundry-equipped building.
-    Was missing from the private router entirely — mcp_server.py's
+    Was missing from the private router entirely — the MCP server's
     get_laundry_status tool has been calling this path since before this
     schema migration and always 404ing."""
     if building:

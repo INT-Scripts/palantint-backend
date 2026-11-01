@@ -19,7 +19,7 @@ async def get_class_groups(
     current_user: User = Depends(require_user),
 ):
     """List all class groups. Was missing from the private router entirely —
-    mcp_server.py's get_class_roster tool has been calling this path since
+    the MCP server's get_class_roster tool has been calling this path since
     before this schema migration and always 404ing."""
     result = await db.execute(select(Organization).where(Organization.kind == "CLASS_GROUP"))
     return [{"id": str(g.id), "name": g.name} for g in result.scalars().all()]

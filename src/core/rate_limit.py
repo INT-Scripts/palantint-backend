@@ -63,7 +63,7 @@ api_limiter = _RateLimiter(max_requests=60, window_seconds=60)
 
 # Singleton: 20 failed MCP bearer-token verifications per minute per IP.
 # Same purpose as login_limiter (bound credential-guessing attempts). Only failures
-# count: the SSE transport re-verifies the token on every JSON-RPC message, so
+# count: the streamable HTTP transport re-verifies the token on every JSON-RPC message, so
 # counting successes would lock out a legitimate client after a handful of tool calls.
 mcp_auth_limiter = _RateLimiter(max_requests=20, window_seconds=60)
 

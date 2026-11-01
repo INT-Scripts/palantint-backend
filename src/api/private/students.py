@@ -81,7 +81,7 @@ async def get_apartment_details(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_user),
 ):
-    """Was missing from the private router entirely — mcp_server.py's
+    """Was missing from the private router entirely — the MCP server's
     get_apartment_info tool has been calling this path since before this
     schema migration and always 404ing. Mirrors api/public/students.py."""
     result = await db.execute(

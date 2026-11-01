@@ -36,8 +36,8 @@ from core.config import settings
 # Public router and dependencies
 from core.rate_limit import rate_limit_dep
 from db.database import init_db
-from mcp_server import client as mcp_client
-from mcp_server import mcp
+from palantint_mcp.server import client as mcp_client
+from palantint_mcp.server import mcp
 
 
 # Ensure necessary directories exist before mounting static files

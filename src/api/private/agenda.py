@@ -130,13 +130,9 @@ async def compare_agendas(
         results = {}
 
         for student_id in req.student_ids:
-            student = await db.get(Person, student_id)
-            if not student:
-                continue
-
             stmt = (
                 select(Event)
-                .options(selectinload(Event.organization))
+                .options(selectinload(Event.organization), selectinload(Event.location))
                 .where(
                     event_for_person_clause(student_id),
                     Event.start_time >= dt_start,
@@ -155,6 +151,7 @@ async def compare_agendas(
                     "start_time": e.start_time.isoformat(),
                     "end_time": e.end_time.isoformat(),
                     "type": e.kind,
+                    "room": room_label(e.location),
                     "club_name": event_club(e).name if event_club(e) else None,
                 }
                 for e in events

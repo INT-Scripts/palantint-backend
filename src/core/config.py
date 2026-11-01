@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     
     # Internal Authentication
     MCP_SERVICE_TOKEN: str | None = None
+    # Private API the MCP tools call back into (the same process, over loopback).
+    MCP_API_BASE_URL: str = "http://localhost:3000/api/private"
     
     # Database
     DATABASE_URL: str | None = None
