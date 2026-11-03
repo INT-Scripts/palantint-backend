@@ -66,3 +66,21 @@ async def test_relationships_requires_admin_to_create(client, db_session, user_t
         headers=headers,
     )
     assert res.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_default_coloc_and_binome_are_symmetric_and_seed_is_idempotent(db_session):
+    from sqlalchemy import select
+    from db.seed import seed_relationship_types
+
+    existing = RelationshipType(name="Coloc", color="#123456", is_symmetric=True)
+    db_session.add(existing)
+    await db_session.flush()
+    await seed_relationship_types(db_session, log=lambda _: None)
+    await db_session.flush()
+    await seed_relationship_types(db_session, log=lambda _: None)
+    await db_session.flush()
+    types = (await db_session.execute(select(RelationshipType))).scalars().all()
+    assert len([t for t in types if t.name == "Coloc"]) == 1
+    assert next(t for t in types if t.name == "Coloc").color == "#123456"
+    assert next(t for t in types if t.name == "Binôme").is_symmetric is True

@@ -83,6 +83,8 @@ async def init_db():
                 if conn.dialect.name == "postgresql":
                     from sqlalchemy import text
                     await conn.execute(text("ALTER TABLE events ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;"))
+                    await conn.execute(text("ALTER TABLE locations ADD COLUMN IF NOT EXISTS source_id uuid REFERENCES data_sources(id);"))
+                    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_locations_source_id ON locations (source_id);"))
                     await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_events_is_active ON events (is_active);"))
                     await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_event_attendees_person_id ON event_attendees (person_id);"))
                     await conn.execute(text("ALTER TABLE locations DROP CONSTRAINT IF EXISTS uq_location_kind_code;"))

@@ -46,22 +46,16 @@ class ThreeDConfigSchema(BaseModel):
     markers: List[BuildingMarker] = []
 
 
-BUILDING_FLOORS: Dict[str, List[str]] = {
-    "Foyer": ["0", "1"],
-    "U1": ["0", "1", "2", "3", "4", "5"],
-    "U2": ["1", "2", "3", "4", "5"],
-    "U3": ["0", "1", "2"],
-    "U4": ["1", "2", "3", "4", "5", "6"],
-    "U5": ["-0.5", "0.5", "1", "2", "3", "4"],
-    "U6": ["1", "2", "3"],
-    "U7": ["1", "2", "3", "4", "5", "6"],
-}
+@router.get("/catalog")
+async def get_plan_catalog(db: AsyncSession = Depends(get_db)):
+    from services.map_catalog import plan_catalog
+    return await plan_catalog(db)
 
 
 @router.get("/buildings", response_model=Dict[str, List[str]])
-async def get_public_buildings():
-    """Return available residential buildings and their floor levels."""
-    return BUILDING_FLOORS
+async def get_public_buildings(db: AsyncSession = Depends(get_db)):
+    catalog = await get_plan_catalog(db)
+    return {code: [floor["value"] for floor in floors] for code, floors in catalog["all"].items()}
 
 
 async def _get_building_location(db: AsyncSession, building_id: str):

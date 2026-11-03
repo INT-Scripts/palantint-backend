@@ -11,7 +11,7 @@ from core.config import settings
 from core.rate_limit import get_client_ip, mcp_auth_limiter
 
 from .client import client
-from .tools import clubs, directory, housing, schedule
+from .tools import clubs, directory, housing, printing, schedule
 
 logger = logging.getLogger("mcp")
 
@@ -109,6 +109,7 @@ TOOLS = [
     (schedule.find_available_rooms, "Free rooms", {}),
     (housing.get_apartment_info, "Apartment specs", {}),
     (housing.get_laundry_status, "Laundry availability", {"annotations": LIVE, "timeout": 20.0}),
+    (printing.get_print_sharing_stats, "Print sharing totals", {}),
     (housing.list_reference, "Reference values", {}),
 ]
 

@@ -7,19 +7,66 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.auth import get_password_hash
 
 from .database import AsyncSessionLocal
-from .models import DataSource, Organization, RelationshipType, User
+from .models import DataSource, Location, Organization, RelationshipType, User
 
 # Registry of every source system that writes into the DB. Loaders reference
 # these by `code` (not free text) when stamping provenance on the rows they
 # touch, and open an IngestionRun against them for every sync.
 DATA_SOURCES = [
-    {"code": "trombint", "kind": "SCRAPER", "label": "TrombINT", "description": "Student directory scrape (identity, photos, ecole/promo)."},
-    {"code": "agenda_ade", "kind": "SCRAPER", "label": "Agenda ADE", "description": "ADE timetable scrape (courses, exams, rooms)."},
-    {"code": "maisel", "kind": "SCRAPER", "label": "MaisEL", "description": "Housing/apartment allocation scrape."},
-    {"code": "groupes", "kind": "SCRAPER", "label": "Groupes", "description": "Class-group roster scrape."},
-    {"code": "clubs", "kind": "SCRAPER", "label": "Clubs", "description": "Club roster and metadata scrape."},
-    {"code": "vault_manual", "kind": "MANUAL", "label": "Vault (Manual OSINT)", "description": "Manually researched OSINT data restored from the vault export."},
-    {"code": "admin_panel", "kind": "ADMIN", "label": "Admin Panel", "description": "Data entered or edited directly by an admin through the backend."},
+    {
+        "code": "campus_reference",
+        "kind": "MANUAL",
+        "label": "Référentiel campus",
+        "description": "Versioned legacy plan catalog.",
+    },
+    {
+        "code": "wemap",
+        "kind": "SCRAPER",
+        "label": "Wemap Campus Évry",
+        "description": "Indoor WGS84 floor plans, room geometry and campus points of interest.",
+    },
+    {
+        "code": "trombint",
+        "kind": "SCRAPER",
+        "label": "TrombINT",
+        "description": "Student directory scrape (identity, photos, ecole/promo).",
+    },
+    {
+        "code": "agenda_ade",
+        "kind": "SCRAPER",
+        "label": "Agenda ADE",
+        "description": "ADE timetable scrape (courses, exams, rooms).",
+    },
+    {
+        "code": "maisel",
+        "kind": "SCRAPER",
+        "label": "MaisEL",
+        "description": "Housing/apartment allocation scrape.",
+    },
+    {
+        "code": "groupes",
+        "kind": "SCRAPER",
+        "label": "Groupes",
+        "description": "Class-group roster scrape.",
+    },
+    {
+        "code": "clubs",
+        "kind": "SCRAPER",
+        "label": "Clubs",
+        "description": "Club roster and metadata scrape.",
+    },
+    {
+        "code": "vault_manual",
+        "kind": "MANUAL",
+        "label": "Vault (Manual OSINT)",
+        "description": "Manually researched OSINT data restored from the vault export.",
+    },
+    {
+        "code": "admin_panel",
+        "kind": "ADMIN",
+        "label": "Admin Panel",
+        "description": "Data entered or edited directly by an admin through the backend.",
+    },
 ]
 
 # Base Organization rows loaders resolve against by (kind, name) instead of
@@ -34,6 +81,93 @@ PROMOS = [
     ("IMT-BS", "Management 2ème année"),
     ("IMT-BS", "Management 3ème année"),
 ]
+
+
+async def seed_relationship_types(db_session: AsyncSession, log=print):
+    defaults = [
+        {"name": "Amis", "color": "#3b82f6"},
+        {"name": "En couple", "color": "#ec4899"},
+        {"name": "Ex", "color": "#ef4444"},
+        {"name": "Coloc", "color": "#f97316", "is_symmetric": True},
+        {"name": "Binôme", "color": "#14b8a6", "is_symmetric": True},
+    ]
+
+    for rt_data in defaults:
+        result = await db_session.execute(
+            select(RelationshipType).where(RelationshipType.name == rt_data["name"])
+        )
+        existing = result.scalars().first()
+        if not existing:
+            db_session.add(RelationshipType(**rt_data))
+            log(f"[dim]Seed: Added relationship type '{rt_data['name']}'[/dim]")
+
+
+async def seed_map_catalog(db_session):
+    from core.map_reference import reference_data
+
+    source = (
+        (
+            await db_session.execute(
+                select(DataSource).where(DataSource.code == "campus_reference")
+            )
+        )
+        .scalars()
+        .first()
+    )
+    for code, definition in reference_data()["legacy_buildings"].items():
+        building = (
+            (
+                await db_session.execute(
+                    select(Location).where(
+                        Location.kind == "BUILDING", Location.code == code
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if building is None:
+            building = Location(
+                kind="BUILDING",
+                code=code,
+                name=code,
+                source_id=source.id if source else None,
+            )
+            db_session.add(building)
+            await db_session.flush()
+        attributes = dict(building.attributes or {})
+        attributes.setdefault("legacy_plan", {"category": definition["category"]})
+        building.attributes = attributes
+        for definition in definition["floors"]:
+            floor = (
+                (
+                    await db_session.execute(
+                        select(Location).where(
+                            Location.kind == "FLOOR",
+                            Location.parent_id == building.id,
+                            Location.code == definition["value"],
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if floor is None:
+                floor = Location(
+                    kind="FLOOR",
+                    code=definition["value"],
+                    name=definition["label"],
+                    parent_id=building.id,
+                    source_id=source.id if source else None,
+                )
+                db_session.add(floor)
+            attributes = dict(floor.attributes or {})
+            attributes.setdefault(
+                "legacy_plan",
+                {"label": definition["label"], "assets": definition["assets"]},
+            )
+            floor.attributes = attributes
+    await db_session.flush()
 
 
 async def seed_default_data(db_session: AsyncSession = None, log=print):
@@ -55,20 +189,7 @@ async def seed_default_data(db_session: AsyncSession = None, log=print):
             log(f"[yellow]Warning: Could not create unaccent extension: {e}[/yellow]")
 
         # 2. Seed Relationship Types
-        defaults = [
-            {"name": "Amis", "color": "#3b82f6"},
-            {"name": "En couple", "color": "#ec4899"},
-            {"name": "Ex", "color": "#ef4444"},
-        ]
-
-        for rt_data in defaults:
-            result = await db_session.execute(
-                select(RelationshipType).where(RelationshipType.name == rt_data["name"])
-            )
-            existing = result.scalars().first()
-            if not existing:
-                db_session.add(RelationshipType(**rt_data))
-                log(f"[dim]Seed: Added relationship type '{rt_data['name']}'[/dim]")
+        await seed_relationship_types(db_session, log)
 
         # 3. Seed DataSource registry
         for ds_data in DATA_SOURCES:
@@ -107,12 +228,18 @@ async def seed_default_data(db_session: AsyncSession = None, log=print):
             )
             existing = result.scalars().first()
             if not existing:
-                db_session.add(Organization(
-                    kind="PROMO",
-                    name=promo_name,
-                    parent_id=school_orgs[school_name].id,
-                ))
-                log(f"[dim]Seed: Added promo '{promo_name}' under '{school_name}'[/dim]")
+                db_session.add(
+                    Organization(
+                        kind="PROMO",
+                        name=promo_name,
+                        parent_id=school_orgs[school_name].id,
+                    )
+                )
+                log(
+                    f"[dim]Seed: Added promo '{promo_name}' under '{school_name}'[/dim]"
+                )
+
+        await seed_map_catalog(db_session)
 
         # 6. Seed MCP Admin User
         mcp_user = os.environ.get("MCP_PALANTINT_USERNAME")
@@ -124,17 +251,21 @@ async def seed_default_data(db_session: AsyncSession = None, log=print):
             )
             existing_user = result.scalars().first()
             if not existing_user:
-                db_session.add(User(
-                    username=mcp_user,
-                    hashed_password=get_password_hash(mcp_pass),
-                    is_admin=True
-                ))
+                db_session.add(
+                    User(
+                        username=mcp_user,
+                        hashed_password=get_password_hash(mcp_pass),
+                        is_admin=True,
+                    )
+                )
                 log(f"[dim]Seed: Created MCP admin user '{mcp_user}'[/dim]")
             else:
                 # Optional: Ensure it has admin rights if it exists
                 if not existing_user.is_admin:
                     existing_user.is_admin = True
-                    log(f"[dim]Seed: Upgraded existing user '{mcp_user}' to admin[/dim]")
+                    log(
+                        f"[dim]Seed: Upgraded existing user '{mcp_user}' to admin[/dim]"
+                    )
 
         await db_session.flush()
 
@@ -144,6 +275,7 @@ async def seed_default_data(db_session: AsyncSession = None, log=print):
     finally:
         if local_session:
             await db_session.close()
+
 
 if __name__ == "__main__":
     asyncio.run(seed_default_data())

@@ -84,27 +84,9 @@ async def get_apartment_details(
     """Was missing from the private router entirely — the MCP server's
     get_apartment_info tool has been calling this path since before this
     schema migration and always 404ing. Mirrors api/public/students.py."""
-    result = await db.execute(
-        select(Location).where(Location.kind == "APARTMENT").options(selectinload(Location.parent))
-    )
-    details = result.scalars().all()
+    from api.public.students import get_apartment_details as public_details
+    return await public_details(db)
 
-    out = {}
-    for d in details:
-        attrs = d.attributes or {}
-        out[d.code] = {
-            "Logement": d.code,
-            "Bâtiment": d.parent.code if d.parent else attrs.get("building"),
-            "Etage": attrs.get("floor"),
-            "Type": attrs.get("type"),
-            "Superficie": attrs.get("surface"),
-            "Tarif": attrs.get("price"),
-            "Allocation boursier": attrs.get("alloc_boursier"),
-            "Allocation non boursier": attrs.get("alloc_non_boursier"),
-            "_req_b": attrs.get("req_b"),
-            "_req_e": attrs.get("req_e"),
-        }
-    return out
 
 
 @router.get("/apartments/occupied")

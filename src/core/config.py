@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     MCP_SERVICE_TOKEN: str | None = None
     # Private API the MCP tools call back into (the same process, over loopback).
     MCP_API_BASE_URL: str = "http://localhost:3000/api/private"
-    
+
     # Database
     DATABASE_URL: str | None = None
     POSTGRES_USER: str = "postgres"
@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     # Media & Profiles
     MEDIA_DIR: Path = PRIVATE_ASSETS_DIR / "media"
     PROFILES_DIR: Path = PRIVATE_ASSETS_DIR / "profiles"
+
+    # Print quota sharing (followme). PDFs only live here until uploaded to followme.
+    PRINT_UPLOAD_DIR: Path = PRIVATE_ASSETS_DIR / "print_uploads"
+    PRINT_MAX_UPLOAD_MB: int = 50
+    PRINT_HOLD_MINUTES: int = 60  # held job auto-cancelled after this delay
+    PRINT_HOLD_WARNING_MINUTES: int = 10  # requester warned this long before
+    PRINT_APPROVAL_HOURS: int = 24  # manual approval window
+    PRINT_LOOP_SECONDS: int = 60
 
     model_config = SettingsConfigDict(
         env_file=[

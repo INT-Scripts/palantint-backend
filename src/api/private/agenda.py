@@ -5,7 +5,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
@@ -30,16 +30,18 @@ router = APIRouter(tags=["agenda"])
 class CompareRequest(BaseModel):
     student_ids: List[uuid.UUID]
     start_date: str  # YYYY-MM-DD
-    end_date: str    # YYYY-MM-DD
+    end_date: str  # YYYY-MM-DD
 
 
 def parse_iso_datetime(iso_str: str) -> datetime:
     """Parses ISO datetime and ensures it is naive for DB comparison."""
     try:
-        dt = datetime.fromisoformat(iso_str.replace('Z', '+00:00'))
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
         return dt.replace(tzinfo=None)
     except Exception:
-        raise HTTPException(status_code=400, detail=f"Invalid ISO datetime format: {iso_str}")
+        raise HTTPException(
+            status_code=400, detail=f"Invalid ISO datetime format: {iso_str}"
+        )
 
 
 def room_label(location: Optional[Location]) -> Optional[str]:
@@ -69,9 +71,8 @@ def event_in_class_groups_clause(class_group_ids_subq):
     one of them, or it's linked via the secondary EventOrganization table
     (old EventClassGroup was a plain m2m; the new schema splits primary vs.
     secondary organization but we union both to preserve old read behavior)."""
-    secondary_match = (
-        select(EventOrganization.event_id)
-        .where(EventOrganization.organization_id.in_(class_group_ids_subq))
+    secondary_match = select(EventOrganization.event_id).where(
+        EventOrganization.organization_id.in_(class_group_ids_subq)
     )
     return or_(
         Event.organization_id.in_(class_group_ids_subq),
@@ -80,15 +81,23 @@ def event_in_class_groups_clause(class_group_ids_subq):
 
 
 def event_for_person_clause(person_id):
-    attendee_events = select(EventAttendee.event_id).where(EventAttendee.person_id == person_id)
-    has_attendees = select(EventAttendee.event_id).where(EventAttendee.event_id == Event.id).exists()
+    attendee_events = select(EventAttendee.event_id).where(
+        EventAttendee.person_id == person_id
+    )
+    has_attendees = (
+        select(EventAttendee.event_id)
+        .where(EventAttendee.event_id == Event.id)
+        .exists()
+    )
     return and_(
         Event.is_active.is_(True),
         or_(
             Event.id.in_(attendee_events),
             and_(
                 ~has_attendees,
-                event_in_class_groups_clause(student_class_group_ids_subquery(person_id)),
+                event_in_class_groups_clause(
+                    student_class_group_ids_subquery(person_id)
+                ),
             ),
         ),
     )
@@ -103,9 +112,7 @@ async def get_event_professors(db: AsyncSession, event: Event) -> Optional[str]:
     )
     presenters = result.scalars().all()
     if presenters:
-        return ", ".join(
-            f"{p.first_name} {p.last_name}".strip() for p in presenters
-        )
+        return ", ".join(f"{p.first_name} {p.last_name}".strip() for p in presenters)
     return event.presenters_raw
 
 
@@ -120,7 +127,7 @@ def event_club(event: Event) -> Optional[Organization]:
 async def compare_agendas(
     req: CompareRequest,
     current_user: User = Depends(require_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Fetches agendas for multiple students and returns them grouped by student."""
     try:
@@ -135,7 +142,7 @@ async def compare_agendas(
                 .options(selectinload(Event.organization), selectinload(Event.location))
                 .where(
                     event_for_person_clause(student_id),
-                    Event.start_time >= dt_start,
+                    Event.end_time > dt_start,
                     Event.start_time < dt_end + timedelta(days=1),
                 )
                 .order_by(Event.start_time)
@@ -163,21 +170,54 @@ async def compare_agendas(
         raise HTTPException(status_code=500, detail="Failed to compare agendas")
 
 
+def rooms_with_events(start=None, end=None):
+    # EXISTS yields one row per location without DISTINCT on its JSON attributes,
+    # which PostgreSQL cannot compare (SQLite does not expose that failure).
+    event_query = select(Event.id).where(
+        Event.location_id == Location.id, Event.is_active.is_(True)
+    )
+    if start is not None and end is not None:
+        event_query = event_query.where(Event.start_time < end, Event.end_time > start)
+    return select(Location.id, Location.code, Location.name).where(
+        Location.kind == "ROOM", Location.is_active.is_(True), event_query.exists()
+    )
+
+
+@router.get("/agenda/rooms/resolve")
+async def resolve_agenda_room(
+    q: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_user),
+):
+    from services.rooms import matching_rooms, room_index
+
+    index = await room_index(db)
+    active = {row.id for row in (await db.execute(rooms_with_events())).all()}
+    candidates = matching_rooms(q, index, labels_only=True) or matching_rooms(
+        q, index, capacity_alias=True, labels_only=True
+    )
+    candidates = {
+        identity
+        for identity in candidates
+        if any(index[1].get(room) == identity for room in active)
+    }
+    match = index[0][next(iter(candidates))] if len(candidates) == 1 else None
+    return {
+        "room": (match.name or match.code) if match else None,
+        "ambiguous": len(candidates) > 1,
+    }
+
+
 @router.get("/agenda/rooms/list")
 async def get_all_rooms(
-    current_user: User = Depends(require_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(require_user), db: AsyncSession = Depends(get_db)
 ):
     """Returns a unique list of all rooms found in the agenda database."""
     try:
-        stmt = (
-            select(Location)
-            .join(Event, Event.location_id == Location.id)
-            .where(Event.is_active.is_(True))
-            .distinct()
-        )
-        result = await db.execute(stmt)
-        rooms = [room_label(loc) for loc in result.scalars().all()]
+        result = await db.execute(rooms_with_events())
+        from services.rooms import canonical_labels, room_index
+
+        rooms = canonical_labels(result.all(), await room_index(db))
         return sorted(set(r for r in rooms if r))
     except Exception:
         logger.exception("get_all_rooms failed")
@@ -186,38 +226,27 @@ async def get_all_rooms(
 
 @router.get("/agenda/rooms/available")
 async def get_available_rooms(
-    start_time: str, # ISO format
-    end_time: str,   # ISO format
+    start_time: str,  # ISO format
+    end_time: str,  # ISO format
     current_user: User = Depends(require_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Returns a list of rooms that have no events during the specified period."""
     try:
         dt_start = parse_iso_datetime(start_time)
         dt_end = parse_iso_datetime(end_time)
-
-        # Subquery for occupied rooms during this period
-        occupied_stmt = (
-            select(Location)
-            .join(Event, Event.location_id == Location.id)
-            .where(
-                Event.is_active.is_(True),
-                or_(
-                    and_(Event.start_time <= dt_start, Event.end_time > dt_start),
-                    and_(Event.start_time < dt_end, Event.end_time >= dt_end),
-                    and_(Event.start_time >= dt_start, Event.end_time <= dt_end)
-                )
+        if dt_end <= dt_start:
+            raise HTTPException(
+                status_code=400, detail="End time must be after start time"
             )
-            .distinct()
-        )
 
-        result = await db.execute(occupied_stmt)
-        occupied_rooms = set(r for r in (room_label(loc) for loc in result.scalars().all()) if r)
+        occupied = await db.execute(rooms_with_events(dt_start, dt_end))
+        from services.rooms import canonical_labels, room_index
 
-        # Get all rooms
-        all_rooms_stmt = select(Location).join(Event, Event.location_id == Location.id).where(Event.is_active.is_(True)).distinct()
-        all_rooms_res = await db.execute(all_rooms_stmt)
-        all_rooms = set(r for r in (room_label(loc) for loc in all_rooms_res.scalars().all()) if r)
+        index = await room_index(db)
+        occupied_rooms = canonical_labels(occupied.all(), index)
+        all_rows = await db.execute(rooms_with_events())
+        all_rooms = canonical_labels(all_rows.all(), index)
 
         available = sorted(all_rooms - occupied_rooms)
         return available
@@ -232,9 +261,10 @@ async def get_available_rooms(
 async def get_room_occupancy(
     room_query: str,
     start_date: str,  # YYYY-MM-DD
-    end_date: str,    # YYYY-MM-DD
+    end_date: str,  # YYYY-MM-DD
+    exact: bool = False,
     current_user: User = Depends(require_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Checks occupancy for rooms matching the query string within a time range."""
     try:
@@ -242,16 +272,36 @@ async def get_room_occupancy(
         dt_end = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
 
         escaped = escape_like(room_query)
+        room_match = (
+            or_(
+                func.lower(Location.code) == room_query.lower(),
+                func.lower(Location.name) == room_query.lower(),
+            )
+            if exact
+            else or_(
+                Location.code.ilike(f"%{escaped}%"), Location.name.ilike(f"%{escaped}%")
+            )
+        )
+        if exact:
+            from services.rooms import matching_rooms, room_index
+
+            index = await room_index(db)
+            identities = matching_rooms(room_query, index)
+            if identities:
+                room_match = Location.id.in_(
+                    [
+                        identity
+                        for identity, target in index[1].items()
+                        if target in identities
+                    ]
+                )
         stmt = (
             select(Event)
             .options(selectinload(Event.location))
             .join(Location, Event.location_id == Location.id)
             .where(
-                or_(
-                    Location.code.ilike(f"%{escaped}%"),
-                    Location.name.ilike(f"%{escaped}%"),
-                ),
-                Event.start_time >= dt_start,
+                room_match,
+                Event.end_time > dt_start,
                 Event.start_time < dt_end,
                 Event.is_active.is_(True),
             )
@@ -268,7 +318,7 @@ async def get_room_occupancy(
                 "room": room_label(e.location),
                 "start_time": e.start_time.isoformat(),
                 "end_time": e.end_time.isoformat(),
-                "type": e.kind
+                "type": e.kind,
             }
             for e in events
         ]
@@ -352,11 +402,17 @@ async def get_event_class_groups(db: AsyncSession, event: Event) -> List[Organiz
     """CLASS_GROUP organizations linked to an event: its primary organization
     (if it is a class group) plus any secondary links via EventOrganization."""
     org_ids = set()
-    if event.organization_id and event.organization and event.organization.kind == "CLASS_GROUP":
+    if (
+        event.organization_id
+        and event.organization
+        and event.organization.kind == "CLASS_GROUP"
+    ):
         org_ids.add(event.organization_id)
 
     result = await db.execute(
-        select(EventOrganization.organization_id).where(EventOrganization.event_id == event.id)
+        select(EventOrganization.organization_id).where(
+            EventOrganization.event_id == event.id
+        )
     )
     org_ids.update(result.scalars().all())
 
@@ -364,7 +420,9 @@ async def get_event_class_groups(db: AsyncSession, event: Event) -> List[Organiz
         return []
 
     result = await db.execute(
-        select(Organization).where(Organization.id.in_(org_ids), Organization.kind == "CLASS_GROUP")
+        select(Organization).where(
+            Organization.id.in_(org_ids), Organization.kind == "CLASS_GROUP"
+        )
     )
     return result.scalars().all()
 

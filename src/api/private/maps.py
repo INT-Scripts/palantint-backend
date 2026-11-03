@@ -62,12 +62,9 @@ class ThreeDConfigSchema(BaseModel):
 
 
 @router.get("/buildings")
-async def get_buildings(current_user: User = Depends(require_user)):
-    """Was missing from the private router entirely — mcp_server.py's
-    get_map_location tool has been calling this path since before this
-    schema migration and always 404ing."""
-    from api.public.maps import BUILDING_FLOORS
-    return BUILDING_FLOORS
+async def get_buildings(db: AsyncSession = Depends(get_db), current_user: User = Depends(require_user)):
+    from api.public.maps import get_public_buildings
+    return await get_public_buildings(db)
 
 
 async def _get_building_location(db: AsyncSession, building_id: str) -> Optional[Location]:
@@ -239,6 +236,25 @@ async def get_3d_config(
             return ThreeDConfigSchema(**json.load(f))
 
     return ThreeDConfigSchema()
+
+
+@router.get("/3d-overlays")
+async def get_plan_overlays(db: AsyncSession = Depends(get_db), current_user: User = Depends(require_user)):
+    from api.private.indoor import manifest
+    from services.map_catalog import plan_catalog
+    from services.plan_overlays import plan_overlays
+
+    config = await get_3d_config(db=db, current_user=current_user)
+    try:
+        buildings = (await manifest())["buildings"]
+    except HTTPException as error:
+        if error.status_code != 404:
+            raise
+        buildings = []
+    result = plan_overlays(await plan_catalog(db), buildings, [m.model_dump() for m in config.markers])
+    for overlay in result["overlays"]:
+        overlay["metadata"] = await get_building_metadata(overlay["building"], db=db, current_user=current_user)
+    return result
 
 
 @router.post("/3d-config")

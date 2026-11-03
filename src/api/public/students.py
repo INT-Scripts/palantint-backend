@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 
+from core.housing import housing_plan
 from db.database import get_db
 from db.models import Location
 
@@ -14,7 +15,7 @@ async def get_apartment_details(
     db: AsyncSession = Depends(get_db)
 ):
     result = await db.execute(
-        select(Location).where(Location.kind == "APARTMENT").options(selectinload(Location.parent))
+        select(Location).where(Location.kind == "APARTMENT", Location.is_active.is_(True)).options(selectinload(Location.parent))
     )
     details = result.scalars().all()
 
@@ -23,6 +24,7 @@ async def get_apartment_details(
         attrs = d.attributes or {}
         out[d.code] = {
             "Logement": d.code,
+            "plan": attrs.get("plan") or housing_plan(d.code, d.parent.code if d.parent else attrs.get("building"), attrs.get("floor")),
             "Bâtiment": d.parent.code if d.parent else attrs.get("building"),
             "Etage": attrs.get("floor"),
             "Type": attrs.get("type"),

@@ -7,10 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 
-from api.common import get_active_housing, get_active_promo_school, get_trombint_id
+from api.common import get_active_promo_school, get_trombint_id
 from api.private.deps import User, require_admin, require_user
 from db.database import get_db
-from db.models import Person, PersonHousing, PersonRelationship, RelationshipType
+from db.models import Person, PersonRelationship, RelationshipType
 
 router = APIRouter(tags=["relationships"])
 
@@ -64,6 +64,7 @@ async def get_student_relationships(
             output.append(
                 {
                     "id": str(rel.id),
+                    "derived": False,
                     # confidence/evidence_media_id exist on PersonRelationship
                     # but are not surfaced here yet — open product decision.
                     "other_student": {
@@ -83,44 +84,38 @@ async def get_student_relationships(
                 }
             )
 
-    # Dynamically fetch colocataires (roommates) via the active PersonHousing
-    # link rather than the old flat Student.apartment string.
-    housing = await get_active_housing(db, student_id)
-    if housing:
-        roommates_query = (
-            select(Person)
-            .join(PersonHousing, PersonHousing.person_id == Person.id)
-            .where(
-                PersonHousing.location_id == housing.id,
-                PersonHousing.ended_at.is_(None),
-                Person.id != student_id,
-            )
-        )
-        roomates_result = await db.execute(roommates_query)
-        roommates = roomates_result.scalars().all()
+    from services.relationships import roommate_links
 
-        for rm in roommates:
-            rm_trombint_id = await get_trombint_id(db, rm.id)
-            rm_promo, _rm_school = await get_active_promo_school(db, rm.id)
-            output.append(
-                {
-                    "id": f"coloc-{rm.id}",
-                    "other_student": {
-                        "id": str(rm.id),
-                        "first_name": rm.first_name,
-                        "last_name": rm.last_name,
-                        "trombint_id": rm_trombint_id,
-                        "promo": rm_promo,
-                        "profile_picture_path": rm.profile_picture_path,
-                    },
-                    "relationship_type": {
-                        "id": "builtin-colocataire",
-                        "name": "Colocataire",
-                        "color": "#f97316",  # Orange-500
-                    },
-                    "created_at": None,
-                }
-            )
+    for link in await roommate_links(db, student_id):
+        other_id = uuid.UUID(
+            link["target"] if link["source"] == str(student_id) else link["source"]
+        )
+        other = await db.get(Person, other_id)
+        if other is None:
+            continue
+        promo, _ = await get_active_promo_school(db, other.id)
+        output.append(
+            {
+                "id": link["id"],
+                "derived": True,
+                "origin": "housing",
+                "location_id": link["location_id"],
+                "other_student": {
+                    "id": str(other.id),
+                    "first_name": other.first_name,
+                    "last_name": other.last_name,
+                    "trombint_id": await get_trombint_id(db, other.id),
+                    "promo": promo,
+                    "profile_picture_path": other.profile_picture_path,
+                },
+                "relationship_type": {
+                    "id": link["relationship_type_id"],
+                    "name": link["label"],
+                    "color": link["color"],
+                },
+                "created_at": None,
+            }
+        )
 
     return output
 

@@ -43,7 +43,10 @@ async def test_private_maps_buildings_requires_auth(client):
 
 
 @pytest.mark.asyncio
-async def test_private_maps_buildings_shape(client, user_token):
+async def test_private_maps_buildings_shape(client, db_session, user_token):
+    from db.seed import seed_map_catalog
+    await seed_map_catalog(db_session)
+    await db_session.commit()
     headers = {"Authorization": f"Bearer {user_token}"}
     response = await client.get("/api/private/maps/buildings", headers=headers)
     assert response.status_code == 200

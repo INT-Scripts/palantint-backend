@@ -24,6 +24,7 @@ EXPECTED_ORDER = [
     "find_available_rooms",
     "get_apartment_info",
     "get_laundry_status",
+    "get_print_sharing_stats",
     "list_reference",
 ]
 

@@ -1,7 +1,8 @@
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import APIRouter, Depends, FastAPI
+from fastapi import APIRouter, Depends, FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.private.admin import router as admin_router
@@ -15,10 +16,12 @@ from api.private.clubs import router as clubs_router
 # Private router and dependencies
 from api.private.deps import require_user, require_user_query_token
 from api.private.graph import router as graph_router
+from api.private.indoor import router as indoor_router
 from api.private.laundry import router as laundry_router
 from api.private.maps import router as maps_router
 from api.private.media import router as media_router
 from api.private.pay5vend import router as pay5vend_router
+from api.private.printing import router as printing_router
 from api.private.relationships import router as relationships_router
 from api.private.search import router as search_router
 from api.private.students import router as students_router
@@ -32,6 +35,7 @@ from api.public.maps import router as pub_maps_router
 from api.public.search import router as pub_search_router
 from api.public.students import router as pub_students_router
 from core.config import settings
+from services.printing.session import PrintShareError
 
 # Public router and dependencies
 from core.rate_limit import rate_limit_dep
@@ -58,16 +62,19 @@ async def lifespan(app: FastAPI):
     import asyncio
     from api.private.notifications import laundry_notifier_loop
     notifier_task = asyncio.create_task(laundry_notifier_loop())
+    from services.printing.loop import print_share_loop
+    print_task = asyncio.create_task(print_share_loop())
     
     async with mcp_app.lifespan(mcp_app):
         yield
         
     # Execute on shutdown
-    notifier_task.cancel()
-    try:
-        await notifier_task
-    except asyncio.CancelledError:
-        pass
+    for task in (notifier_task, print_task):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
     await mcp_client.aclose()
 
 
@@ -83,6 +90,11 @@ app = FastAPI(
     openapi_url="/openapi.json" if is_dev else None,
 )
 
+@app.exception_handler(PrintShareError)
+async def print_share_error_handler(request: Request, exc: PrintShareError):
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
+
+
 # 1. Auth router (POST /auth/login) - mounted at root
 app.include_router(auth_router)
 
@@ -93,6 +105,7 @@ private_router = APIRouter(
 )
 private_router.include_router(users_router)
 private_router.include_router(pay5vend_router)
+private_router.include_router(printing_router)
 private_router.include_router(admin_router)
 private_router.include_router(students_router)
 private_router.include_router(clubs_router)
@@ -101,6 +114,7 @@ private_router.include_router(relationships_router)
 private_router.include_router(media_router)
 private_router.include_router(search_router)
 private_router.include_router(maps_router)
+private_router.include_router(indoor_router)
 private_router.include_router(laundry_router)
 private_router.include_router(graph_router)
 private_router.include_router(class_groups_router)

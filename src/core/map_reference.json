@@ -1,0 +1,341 @@
+{
+  "legacy_buildings": {
+    "Foyer": {
+      "category": "foyer",
+      "floors": [
+        {
+          "label": "Sous-sol (F0)",
+          "value": "0",
+          "assets": {
+            "geojson": "/api/assets/plans/Foyer_0.geojson"
+          }
+        },
+        {
+          "label": "Rez-de-chaussée (F1)",
+          "value": "1",
+          "assets": {
+            "geojson": "/api/assets/plans/Foyer_1.geojson"
+          }
+        }
+      ]
+    },
+    "U1": {
+      "category": "housing",
+      "floors": [
+        {
+          "label": "RDC",
+          "value": "0",
+          "assets": {
+            "geojson": "/api/assets/plans/U1_0.geojson"
+          }
+        },
+        {
+          "label": "1er",
+          "value": "1",
+          "assets": {
+            "geojson": "/api/assets/plans/U1_1.geojson"
+          }
+        },
+        {
+          "label": "2e",
+          "value": "2",
+          "assets": {
+            "geojson": "/api/assets/plans/U1_2.geojson"
+          }
+        },
+        {
+          "label": "3e",
+          "value": "3",
+          "assets": {
+            "geojson": "/api/assets/plans/U1_3.geojson"
+          }
+        },
+        {
+          "label": "4e",
+          "value": "4",
+          "assets": {
+            "geojson": "/api/assets/plans/U1_4.geojson"
+          }
+        },
+        {
+          "label": "5e",
+          "value": "5",
+          "assets": {
+            "geojson": "/api/assets/plans/U1_5.geojson"
+          }
+        }
+      ]
+    },
+    "U2": {
+      "category": "housing",
+      "floors": [
+        {
+          "label": "1er",
+          "value": "1",
+          "assets": {
+            "geojson": "/api/assets/plans/U2_1.geojson"
+          }
+        },
+        {
+          "label": "2e",
+          "value": "2",
+          "assets": {
+            "geojson": "/api/assets/plans/U2_2.geojson"
+          }
+        },
+        {
+          "label": "3e",
+          "value": "3",
+          "assets": {
+            "geojson": "/api/assets/plans/U2_3.geojson"
+          }
+        },
+        {
+          "label": "4e",
+          "value": "4",
+          "assets": {
+            "geojson": "/api/assets/plans/U2_4.geojson"
+          }
+        },
+        {
+          "label": "5e",
+          "value": "5",
+          "assets": {
+            "geojson": "/api/assets/plans/U2_5.geojson"
+          }
+        }
+      ]
+    },
+    "U3": {
+      "category": "housing",
+      "floors": [
+        {
+          "label": "RDC",
+          "value": "0",
+          "assets": {
+            "geojson": "/api/assets/plans/U3_0.geojson"
+          }
+        },
+        {
+          "label": "1er",
+          "value": "1",
+          "assets": {
+            "geojson": "/api/assets/plans/U3_1.geojson"
+          }
+        },
+        {
+          "label": "2e",
+          "value": "2",
+          "assets": {
+            "geojson": "/api/assets/plans/U3_2.geojson"
+          }
+        }
+      ]
+    },
+    "U4": {
+      "category": "housing",
+      "floors": [
+        {
+          "label": "1er",
+          "value": "1",
+          "assets": {
+            "geojson": "/api/assets/plans/U4_1.geojson"
+          }
+        },
+        {
+          "label": "2e",
+          "value": "2",
+          "assets": {
+            "geojson": "/api/assets/plans/U4_2.geojson"
+          }
+        },
+        {
+          "label": "3e",
+          "value": "3",
+          "assets": {
+            "geojson": "/api/assets/plans/U4_3.geojson"
+          }
+        },
+        {
+          "label": "4e",
+          "value": "4",
+          "assets": {
+            "geojson": "/api/assets/plans/U4_4.geojson"
+          }
+        },
+        {
+          "label": "5e",
+          "value": "5",
+          "assets": {
+            "geojson": "/api/assets/plans/U4_5.geojson"
+          }
+        },
+        {
+          "label": "6e",
+          "value": "6",
+          "assets": {
+            "geojson": "/api/assets/plans/U4_6.geojson"
+          }
+        }
+      ]
+    },
+    "U5": {
+      "category": "housing",
+      "floors": [
+        {
+          "label": "RDC -",
+          "value": "-0.5",
+          "assets": {
+            "geojson": "/api/assets/plans/U5_-0.5.geojson"
+          }
+        },
+        {
+          "label": "RDC +",
+          "value": "0.5",
+          "assets": {
+            "geojson": "/api/assets/plans/U5_0.5.geojson"
+          }
+        },
+        {
+          "label": "1er",
+          "value": "1",
+          "assets": {
+            "geojson": "/api/assets/plans/U5_1.geojson"
+          }
+        },
+        {
+          "label": "2e",
+          "value": "2",
+          "assets": {
+            "geojson": "/api/assets/plans/U5_2.geojson"
+          }
+        },
+        {
+          "label": "3e",
+          "value": "3",
+          "assets": {
+            "geojson": "/api/assets/plans/U5_3.geojson"
+          }
+        },
+        {
+          "label": "4e",
+          "value": "4",
+          "assets": {
+            "geojson": "/api/assets/plans/U5_4.geojson"
+          }
+        }
+      ]
+    },
+    "U6": {
+      "category": "housing",
+      "floors": [
+        {
+          "label": "1er",
+          "value": "1",
+          "assets": {
+            "geojson": "/api/assets/plans/U6_1.geojson"
+          }
+        },
+        {
+          "label": "2e",
+          "value": "2",
+          "assets": {
+            "geojson": "/api/assets/plans/U6_2.geojson"
+          }
+        },
+        {
+          "label": "3e",
+          "value": "3",
+          "assets": {
+            "geojson": "/api/assets/plans/U6_3.geojson"
+          }
+        }
+      ]
+    },
+    "U7": {
+      "category": "housing",
+      "floors": [
+        {
+          "label": "1er",
+          "value": "1",
+          "assets": {
+            "geojson": "/api/assets/plans/U7_1.geojson"
+          }
+        },
+        {
+          "label": "2e",
+          "value": "2",
+          "assets": {
+            "geojson": "/api/assets/plans/U7_2.geojson"
+          }
+        },
+        {
+          "label": "3e",
+          "value": "3",
+          "assets": {
+            "geojson": "/api/assets/plans/U7_3.geojson"
+          }
+        },
+        {
+          "label": "4e",
+          "value": "4",
+          "assets": {
+            "geojson": "/api/assets/plans/U7_4.geojson"
+          }
+        },
+        {
+          "label": "5e",
+          "value": "5",
+          "assets": {
+            "geojson": "/api/assets/plans/U7_5.geojson"
+          }
+        },
+        {
+          "label": "6e",
+          "value": "6",
+          "assets": {
+            "geojson": "/api/assets/plans/U7_6.geojson"
+          }
+        }
+      ]
+    }
+  },
+  "curations": [
+    {
+      "id": "amphi-etoile",
+      "source_code": "vault_manual",
+      "reason": "Amphithéâtre Étoile : contour existant au rez-de-chaussée du bâtiment H.",
+      "feature_ids": [
+        "features:indoorfeature:5782505:Polygon",
+        "features:indoorfeature:5862224:Point",
+        "features:pinpoint:5862224:Point"
+      ],
+      "primary_feature_id": "features:indoorfeature:5782505:Polygon",
+      "properties": {
+        "name": "AMPHI Etoile 300pl",
+        "building_id": 1346,
+        "levels": [
+          0
+        ],
+        "category": "teaching"
+      },
+      "location": {
+        "kind": "ROOM",
+        "name": "AMPHI Etoile 300pl"
+      },
+      "aliases": [
+        "Amphi Etoile",
+        "Amphi Étoile"
+      ]
+    }
+  ],
+  "housing_floor_rules": [
+    {
+      "building": "U5",
+      "source_floor": "0",
+      "room_suffix_threshold": 10,
+      "lower": "-0.5",
+      "upper": "0.5"
+    }
+  ]
+}

@@ -6,9 +6,11 @@ from sqlalchemy import (
     JSON,
     Column,
     ForeignKey,
+    Index,
     LargeBinary,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlmodel import Field, Relationship, SQLModel
@@ -238,6 +240,7 @@ class Location(SQLModel, table=True):
     code: str = Field(index=True)  # e.g. "U3", "RDC", "1001", "mal-3"
     name: Optional[str] = Field(default=None)
     parent_id: Optional[uuid.UUID] = Field(default=None, foreign_key="locations.id", index=True)
+    source_id: Optional[uuid.UUID] = Field(default=None, foreign_key="data_sources.id", index=True)
     attributes: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     # e.g. for APARTMENT: surface, price, alloc_boursier, alloc_non_boursier, req_b, req_e
     # e.g. for MACHINE_SLOT: machine_type (washer/dryer), pay5vend_ref
@@ -423,6 +426,76 @@ class Notification(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now)
 
     user: "User" = Relationship()
+
+
+# ── Printing (followme quota sharing) ─────────────────────────────────────────
+# A donor lets other PalantINT users print on their own followme (PaperCut)
+# account. Amounts are followme pages (the account unit). Usage is never stored
+# as a counter: it is the sum of in-flight reservations and reconciled costs of
+# PrintRequest rows, so caps and ledger cannot drift apart.
+
+class PrintShareSettings(SQLModel, table=True):
+    __tablename__ = "print_share_settings"
+    user_id: uuid.UUID = Field(sa_column=Column(PG_UUID, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True))
+    is_sharing: bool = Field(default=False)
+    is_paused: bool = Field(default=False)
+    pool_enabled: bool = Field(default=False)  # open to every PalantINT user
+    auto_approve: bool = Field(default=True)
+    global_cap: Optional[int] = Field(default=None)  # total pages others may consume, None = unlimited
+    pool_per_person_cap: Optional[int] = Field(default=None)  # pages one person may take from the pool
+    min_balance_floor: int = Field(default=0)  # never let the followme balance drop below this
+    last_balance: Optional[int] = Field(default=None)
+    balance_checked_at: Optional[datetime] = Field(default=None)
+    updated_at: datetime = Field(default_factory=utc_now, sa_column_kwargs={"onupdate": utc_now})
+
+    user: "User" = Relationship()
+
+
+class PrintGrant(SQLModel, table=True):
+    """Pages a donor reserves for one named beneficiary. Revoked or expired grants are kept for history."""
+    __tablename__ = "print_grants"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    donor_user_id: uuid.UUID = Field(sa_column=Column(PG_UUID, ForeignKey("users.id", ondelete="CASCADE"), index=True))
+    beneficiary_user_id: uuid.UUID = Field(sa_column=Column(PG_UUID, ForeignKey("users.id", ondelete="CASCADE"), index=True))
+    amount: int
+    expires_at: Optional[datetime] = Field(default=None)
+    revoked_at: Optional[datetime] = Field(default=None, index=True)
+    revoked_by_user_id: Optional[uuid.UUID] = Field(default=None, sa_column=Column(PG_UUID, ForeignKey("users.id", ondelete="SET NULL")))
+    created_at: datetime = Field(default_factory=utc_now)
+
+    __table_args__ = (
+        Index("uq_print_grant_active", "donor_user_id", "beneficiary_user_id", unique=True,
+              postgresql_where=text("revoked_at IS NULL")),
+    )
+
+
+class PrintRequest(SQLModel, table=True):
+    """One document printed on a donor's account, from submission to reconciliation."""
+    __tablename__ = "print_requests"
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    requester_user_id: uuid.UUID = Field(sa_column=Column(PG_UUID, ForeignKey("users.id", ondelete="CASCADE"), index=True))
+    donor_user_id: uuid.UUID = Field(sa_column=Column(PG_UUID, ForeignKey("users.id", ondelete="CASCADE"), index=True))
+    grant_id: Optional[uuid.UUID] = Field(default=None, sa_column=Column(PG_UUID, ForeignKey("print_grants.id", ondelete="SET NULL"), index=True))  # None = pool
+    status: str = Field(default="PENDING_APPROVAL", index=True)
+    # PENDING_APPROVAL | APPROVED | UPLOADING | HELD | RELEASED | RECONCILED | CANCELLED | REJECTED | EXPIRED | FAILED
+    original_filename: str
+    queued_name: str = Field(unique=True)  # palantint-<id8>-<name>.pdf, the only handle used to find the followme job
+    page_count: int  # after page range trimming
+    page_range: Optional[str] = Field(default=None)
+    copies: int = Field(default=1)
+    color: bool = Field(default=False)
+    options: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    printer_name: Optional[str] = Field(default=None)
+    estimated_cost: int
+    actual_cost: Optional[int] = Field(default=None)
+    temp_path: Optional[str] = Field(default=None)
+    error: Optional[str] = Field(default=None, sa_column=Column(Text))
+    approval_expires_at: Optional[datetime] = Field(default=None)
+    hold_expires_at: Optional[datetime] = Field(default=None)
+    expiry_warned: bool = Field(default=False)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now, sa_column_kwargs={"onupdate": utc_now})
+    released_at: Optional[datetime] = Field(default=None)
 
 
 # ── Maps & 3D Rendering ───────────────────────────────────────────────────────

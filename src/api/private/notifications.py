@@ -26,8 +26,10 @@ class NotificationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    kind: str = "GENERIC"
     title: str
     message: str
+    payload: dict = {}
     is_read: bool
     created_at: datetime
 

@@ -1,4 +1,6 @@
 # Stage 1: Base image with uv and environment configuration
+# int-libraries packages come from the `int-libraries` build context (see compose.yaml)
+# and are installed from /int-libraries, matching the ../int-libraries path in pyproject.toml.
 FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS base
 
 WORKDIR /app
@@ -13,6 +15,7 @@ ENV UV_COMPILE_BYTECODE=1 \
 # Stage 2: Development stage (used when target: development)
 FROM base AS development
 
+COPY --from=int-libraries packages/tsprint /int-libraries/packages/tsprint
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project
@@ -31,6 +34,7 @@ CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "3000", "--proxy-
 # Stage 3: Builder for production dependencies
 FROM base AS builder
 
+COPY --from=int-libraries packages/tsprint /int-libraries/packages/tsprint
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project
