@@ -12,12 +12,25 @@ from db.models import Event, EventOrganization, Organization
 router = APIRouter(tags=["clubs"])
 
 
+def _public_text(text: str | None) -> str | None:
+    """Drop the lines that mention a person through an ``@[id]`` token, with the line that leads into them."""
+    if not text:
+        return text
+    lines = text.split("\n")
+    kept = [
+        line
+        for index, line in enumerate(lines)
+        if "@[" not in line and not (index + 1 < len(lines) and "@[" in lines[index + 1])
+    ]
+    return "\n".join(kept).strip()
+
+
 def _serialize_club_list_item(club: Organization, foyer_room: str | None) -> Dict[str, Any]:
     return {
         "id": str(club.id),
         "name": club.name,
         "slug": club.slug,
-        "description": club.description,
+        "description": _public_text(club.description),
         "logo_url": club.logo_url,
         "type": club_type(club),
         "association_of_origin": club.attributes.get("association_of_origin"),
@@ -82,7 +95,7 @@ async def get_club_details(
     return {
         "id": str(club.id),
         "name": club.name,
-        "description": club.description,
+        "description": _public_text(club.description),
         "logo_url": club.logo_url,
         "type": club_type(club),
         "association_of_origin": club.attributes.get("association_of_origin"),
@@ -99,7 +112,7 @@ async def get_club_details(
                 "start_time": e.start_time.isoformat(),
                 "end_time": e.end_time.isoformat(),
                 "room": (e.location.name or e.location.code) if e.location else None,
-                "description": e.description,
+                "description": _public_text(e.description),
             }
             for e in sorted(club_events, key=lambda ev: ev.start_time)
         ],
