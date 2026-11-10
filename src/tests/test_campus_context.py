@@ -222,3 +222,26 @@ async def test_drawn_foyer_rooms_list_their_clubs_with_logos(client, db_session,
     clubs = {item["properties"]["room_id"]: item["properties"]["clubs"] for item in body["features"] if item["properties"]["kind"] == "room"}
     assert clubs["F1-1"] == [{"id": clubs["F1-1"][0]["id"], "name": "DolphINT", "logo_url": "/api/assets/clubs/dolphint.png"}]
     assert clubs["F1-2"] == [{"id": None, "name": "Salle libre", "logo_url": None}]
+
+
+@pytest.mark.asyncio
+async def test_legacy_links_resolve_historical_floors_and_rooms_to_the_campus_map(client, db_session, user_token, campus):
+    await add_plan_floors(db_session)
+    await db_session.commit()
+    headers = {"Authorization": f"Bearer {user_token}"}
+
+    async def resolve(**params):
+        response = await client.get("/api/private/maps/indoor/legacy", params=params, headers=headers)
+        assert response.status_code == 200
+        return response.json()
+
+    room = {"building": "9", "level": 1.0, "feature": "plan:U9_1:room:9101"}
+    assert await resolve(building="u9", floor="1", room="9101") == room
+    assert await resolve(room="9101") == room
+    assert await resolve(building="U9", floor="1") == {"building": "9", "level": 1.0, "feature": None}
+    # An unplaced floor keeps the building, without inventing a geographic level.
+    assert await resolve(building="U9", floor="2") == {"building": "9", "level": None, "feature": None}
+    # Rooms without a drawn plan fall back to the Wemap lookup.
+    assert (await resolve(building="U9", room="Ancien nom"))["feature"] is None
+    assert await resolve(building="U8") == {"building": "U8", "level": None, "feature": None}
+    assert (await client.get("/api/private/maps/indoor/legacy")).status_code == 401

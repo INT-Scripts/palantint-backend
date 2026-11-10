@@ -231,6 +231,79 @@ async def lookup(
     return matches
 
 
+@router.get("/legacy")
+async def legacy_link(
+    building: str | None = Query(None, max_length=40),
+    floor: str | None = Query(None, max_length=20),
+    room: str | None = Query(None, max_length=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """Campus selection for links to the retired apartments and Foyer pages.
+
+    Their ``bldg``/``floor`` values are historical plan floors, not geographic
+    levels: the placements ingested by ``plan_georeference`` translate them.
+    """
+    from core.housing import housing_plan
+
+    code = building.strip() if building else None
+    if code:
+        code = "Foyer" if code.lower() == "foyer" else code.upper()
+    elif room:
+        plan = housing_plan(room.strip())
+        code = plan["building"] if plan else ("Foyer" if room.upper().startswith("F") else None)
+        floor = floor or (plan and plan["floor"])
+    placements = await plan_placements(db)
+    target = {"building": None, "level": None, "feature": None}
+    if room:
+        wanted = room_alias(room)
+        drawn = [
+            feature
+            for feature in projected_plans(placements)[0]
+            if feature["properties"]["kind"] == "room"
+            and (not code or feature["properties"]["plan"]["building"] == code)
+            and wanted in {room_alias(feature["properties"]["name"] or ""), room_alias(feature["properties"]["room_id"] or "")}
+        ]
+        if len(drawn) == 1:
+            props = drawn[0]["properties"]
+            target = {"building": props["building_id"], "level": (props["levels"] or [None])[0], "feature": drawn[0]["id"]}
+        elif not drawn:
+            matches = await lookup(room, db)
+            if len(matches) == 1:
+                match = matches[0]
+                target = {"building": match["building_id"], "level": (match["levels"] or [None])[0], "feature": match["feature_id"]}
+    if code and target["feature"] is None:
+        entry = placements.get(f"{code}_{floor}", {}) if floor else {}
+        if entry.get("status") == "placed":
+            target["level"] = entry.get("level")
+        target["building"] = entry.get("wemap_building_id") or next(
+            (
+                value["wemap_building_id"]
+                for name, value in sorted(placements.items())
+                if name.startswith(f"{code}_") and value.get("wemap_building_id") is not None
+            ),
+            None,
+        )
+        if target["building"] is None:
+            try:
+                buildings = (await manifest())["buildings"]
+            except HTTPException:
+                buildings = []
+            target["building"] = next(
+                (
+                    item["id"]
+                    for item in buildings
+                    if any(residence["code"] == code for residence in item.get("residences", []))
+                    or code.lower() in item["name"].lower().split()
+                ),
+                None,
+            )
+        # A residence the map does not know yet still opens on its code.
+        target["building"] = target["building"] if target["building"] is not None else code
+    if target["building"] is not None:
+        target["building"] = str(target["building"])
+    return target
+
+
 @router.get("/locations/{location_id}")
 async def location_context(location_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     location = await db.get(Location, location_id)
