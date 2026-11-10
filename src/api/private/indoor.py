@@ -8,11 +8,12 @@ from functools import lru_cache
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from fastapi.responses import FileResponse
 from sqlalchemy import select
-from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from api.private.deps import require_user
 from core.config import settings
+from core.housing import apartment_details
 from core.places import mark_destinations, place_category, room_alias
 from db.database import get_db
 from db.models import Event, Location, Organization, Person, PersonHousing
@@ -322,6 +323,68 @@ async def location_context(location_id: uuid.UUID, db: AsyncSession = Depends(ge
         # The agenda API exposes room_label (name, falling back to code). Use
         # the same value so a code like A008 can select the label A008 36pl.
         "agenda_room": (location.name or location.code) if has_agenda else None,
+        "apartment": apartment_details(location.attributes)
+        if location.kind == "APARTMENT"
+        else None,
+    }
+
+
+@router.get("/housing")
+async def housing_summary(db: AsyncSession = Depends(get_db)):
+    """Per-residence summary for the building panel: flats per type and rent range."""
+    building = aliased(Location)
+    rows = (
+        await db.execute(
+            select(Location.id, Location.attributes, building.code.label("building"))
+            .join(building, building.id == Location.parent_id)
+            .where(Location.kind == "APARTMENT", Location.is_active.is_(True))
+        )
+    ).all()
+    occupied = set(
+        (
+            await db.execute(
+                select(PersonHousing.location_id).where(
+                    PersonHousing.ended_at.is_(None),
+                    PersonHousing.location_id.in_([row.id for row in rows]),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    summary = {}
+    for row in rows:
+        details = apartment_details(row.attributes)
+        residence = summary.setdefault(
+            row.building, {"apartments": 0, "occupied": 0, "types": {}}
+        )
+        residence["apartments"] += 1
+        residence["occupied"] += row.id in occupied
+        kind = residence["types"].setdefault(
+            details["type"] or "autre", {"count": 0, "rents": []}
+        )
+        kind["count"] += 1
+        if details["rent"] is not None:
+            kind["rents"].append(details["rent"])
+
+    def rent_range(rents):
+        return {"min": min(rents), "max": max(rents)} if rents else None
+
+    return {
+        code: {
+            "apartments": residence["apartments"],
+            "occupied": residence["occupied"],
+            "rent": rent_range(
+                [rent for kind in residence["types"].values() for rent in kind["rents"]]
+            ),
+            "types": [
+                {"type": name, "count": kind["count"], "rent": rent_range(kind["rents"])}
+                for name, kind in sorted(
+                    residence["types"].items(), key=lambda item: -item[1]["count"]
+                )
+            ],
+        }
+        for code, residence in summary.items()
     }
 
 
@@ -366,7 +429,10 @@ async def plans(db: AsyncSession = Depends(get_db)):
             extra = {"location_id": apartments.get((plan["building"], props["name"]))}
             room = foyer.get(props["room_id"]) if plan["building"] == "Foyer" else None
             if room:
-                extra["clubs"] = [{"id": club["club_id"], "name": club["club_name"]} for club in room["clubs"]]
+                extra["clubs"] = [
+                    {"id": club["club_id"], "name": club["club_name"], "logo_url": club["logo_url"]}
+                    for club in room["clubs"]
+                ] or [{"id": None, "name": room["raw_name"], "logo_url": None}]
             feature = {**feature, "properties": {**props, **extra}}
         linked.append(feature)
     return {

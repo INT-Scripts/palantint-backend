@@ -4,7 +4,7 @@ import math
 import pytest
 
 from api.private import indoor
-from db.models import Location
+from db.models import Location, Organization, Person, PersonHousing
 from services import plan_geography
 
 ORIGIN = [2.44, 48.62]
@@ -137,3 +137,88 @@ async def test_downloaded_context_is_served_only_from_private_map_assets(client,
     assert (glb.status_code, glb.headers["content-type"]) == (200, "model/gltf-binary")
     assert (await client.get("/api/private/maps/indoor/aerial/17/1/3.jpg", headers=headers)).status_code == 404
     assert (await client.get("/api/private/maps/indoor/aerial/17/..%2F1/2.jpg", headers=headers)).status_code in (404, 422)
+
+
+MAISEL = {"floor": "Premier étage", "type": "studio", "surface": "22 m²", "price": "550€", "alloc_boursier": "114€", "alloc_non_boursier": "87€", "req_b": 9, "req_e": "1"}
+
+
+@pytest.mark.asyncio
+async def test_apartment_context_exposes_typed_maisel_details(client, db_session, user_token):
+    building = Location(kind="BUILDING", code="U9")
+    db_session.add(building)
+    await db_session.flush()
+    apartment = Location(kind="APARTMENT", code="9101", parent_id=building.id, attributes=MAISEL)
+    room = Location(kind="ROOM", code="A001", attributes={})
+    db_session.add_all([apartment, room])
+    await db_session.commit()
+    headers = {"Authorization": f"Bearer {user_token}"}
+
+    body = (await client.get(f"/api/private/maps/indoor/locations/{apartment.id}", headers=headers)).json()
+    assert body["apartment"] == {
+        "type": "studio",
+        "floor": "Premier étage",
+        "surface_m2": 22,
+        "rent": 550,
+        "allowances": {"scholarship": 114, "non_scholarship": 87},
+        "net_rent": {"scholarship": 436, "non_scholarship": 463},
+    }
+    assert (await client.get(f"/api/private/maps/indoor/locations/{room.id}", headers=headers)).json()["apartment"] is None
+
+
+@pytest.mark.asyncio
+async def test_housing_summary_counts_types_rents_and_current_occupants(client, db_session, user_token):
+    assert (await client.get("/api/private/maps/indoor/housing")).status_code == 401
+    building = Location(kind="BUILDING", code="U9")
+    db_session.add(building)
+    await db_session.flush()
+    flats = [
+        Location(kind="APARTMENT", code="9101", parent_id=building.id, attributes=MAISEL),
+        Location(kind="APARTMENT", code="9102", parent_id=building.id, attributes={**MAISEL, "price": "600€"}),
+        Location(kind="APARTMENT", code="9103", parent_id=building.id, attributes={**MAISEL, "type": "chambre", "price": "440€"}),
+        Location(kind="APARTMENT", code="9104", parent_id=building.id, attributes=MAISEL, is_active=False),
+    ]
+    person = Person(kind="STUDENT", first_name="Ada", last_name="L")
+    db_session.add_all([*flats, person])
+    await db_session.flush()
+    db_session.add(PersonHousing(person_id=person.id, location_id=flats[0].id))
+    await db_session.commit()
+
+    response = await client.get("/api/private/maps/indoor/housing", headers={"Authorization": f"Bearer {user_token}"})
+    assert response.status_code == 200
+    assert response.json() == {"U9": {
+        "apartments": 3,
+        "occupied": 1,
+        "rent": {"min": 440, "max": 600},
+        "types": [
+            {"type": "studio", "count": 2, "rent": {"min": 550, "max": 600}},
+            {"type": "chambre", "count": 1, "rent": {"min": 440, "max": 440}},
+        ],
+    }}
+
+
+@pytest.mark.asyncio
+async def test_drawn_foyer_rooms_list_their_clubs_with_logos(client, db_session, user_token, campus, tmp_path):
+    (tmp_path / "public" / "clubs").mkdir()
+    (tmp_path / "public" / "clubs" / "foyer_map.csv").write_text("room_id;club_name\nF1-1;DolphINT\nF1-2;Salle libre\n")
+    square = {"type": "Polygon", "coordinates": [[[0, 0], [50, 0], [50, 50], [0, 50], [0, 0]]]}
+    (tmp_path / "public" / "plans" / "Foyer_1.geojson").write_text(json.dumps({
+        "type": "FeatureCollection",
+        "metadata": {"plan_coordinate_space": "local_plan", "building": "Foyer", "floor": "1", "view_box": [0, 0, 100, 100]},
+        "features": [
+            {"type": "Feature", "id": f"room:{room}", "geometry": None, "properties": {"kind": "room", "building": "Foyer", "floor": "1", "room_id": room, "name": room, "plan_geometry": square, "label_coordinates": [25, 25]}}
+            for room in ("F1-1", "F1-2")
+        ],
+    }))
+    foyer = Location(kind="BUILDING", code="Foyer")
+    db_session.add(foyer)
+    await db_session.flush()
+    db_session.add_all([
+        Location(kind="FLOOR", code="1", parent_id=foyer.id, attributes={"plan_georeference": {"status": "placed", "building": "Foyer", "floor": "1", "method": "room_shapes", "level": 1.0, "wemap_building_id": 9, "transform": {"a": 0.05, "b": 0.0, "tx": 0.0, "ty": 0.0}, "frame": FRAME}}),
+        Organization(kind="CLUB", name="DolphINT", logo_url="/api/assets/clubs/dolphint.png"),
+    ])
+    await db_session.commit()
+
+    body = (await client.get("/api/private/maps/indoor/plans", headers={"Authorization": f"Bearer {user_token}"})).json()
+    clubs = {item["properties"]["room_id"]: item["properties"]["clubs"] for item in body["features"] if item["properties"]["kind"] == "room"}
+    assert clubs["F1-1"] == [{"id": clubs["F1-1"][0]["id"], "name": "DolphINT", "logo_url": "/api/assets/clubs/dolphint.png"}]
+    assert clubs["F1-2"] == [{"id": None, "name": "Salle libre", "logo_url": None}]

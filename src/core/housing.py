@@ -34,3 +34,35 @@ def housing_plan(code, building=None, floor=None):
             else:
                 return None
     return {"building": building, "floor": value} if value in valid else None
+
+
+def amount(value):
+    """Maisel publishes display strings such as "550€" or "22 m²"."""
+    if isinstance(value, (int, float)):
+        return value
+    match = re.search(r"\d+(?:[.,]\d+)?", str(value or ""))
+    if not match:
+        return None
+    number = float(match[0].replace(",", "."))
+    return int(number) if number.is_integer() else number
+
+
+def apartment_details(attributes):
+    """Typed view of an APARTMENT ``Location.attributes`` for the private map."""
+    attributes = attributes or {}
+    rent = amount(attributes.get("price"))
+    allowances = {
+        "scholarship": amount(attributes.get("alloc_boursier")),
+        "non_scholarship": amount(attributes.get("alloc_non_boursier")),
+    }
+    return {
+        "type": attributes.get("type"),
+        "floor": attributes.get("floor"),
+        "surface_m2": amount(attributes.get("surface")),
+        "rent": rent,
+        "allowances": allowances,
+        "net_rent": {
+            key: rent - value if rent is not None and value is not None else rent
+            for key, value in allowances.items()
+        },
+    }
