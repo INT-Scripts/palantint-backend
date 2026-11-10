@@ -5,8 +5,10 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from fastapi.responses import FileResponse
 from sqlalchemy import select
+from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.private.deps import require_user
@@ -14,6 +16,7 @@ from core.config import settings
 from core.places import mark_destinations, place_category, room_alias
 from db.database import get_db
 from db.models import Event, Location, Organization, Person, PersonHousing
+from services.plan_geography import plan_placements, projected_plans, superseded_places
 
 router = APIRouter(
     prefix="/maps/indoor", tags=["indoor-maps"], dependencies=[Depends(require_user)]
@@ -320,3 +323,84 @@ async def location_context(location_id: uuid.UUID, db: AsyncSession = Depends(ge
         # the same value so a code like A008 can select the label A008 36pl.
         "agenda_room": (location.name or location.code) if has_agenda else None,
     }
+
+
+def maps_dir():
+    return settings.PRIVATE_ASSETS_DIR / "maps"
+
+
+def map_file(path, media_type, missing):
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail=missing)
+    # Downloaded context changes only when the collection scripts run again.
+    return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private, max-age=86400"})
+
+
+@router.get("/plans")
+async def plans(db: AsyncSession = Depends(get_db)):
+    """Historical drawings placed on the campus, with their authoritative room numbers."""
+    from api.common import build_foyer_index
+
+    placements = await plan_placements(db)
+    features, placed = projected_plans(placements)
+    unplaced = {name: entry.get("reason") for name, entry in placements.items() if entry.get("status") != "placed"}
+    if not features:
+        return {"type": "FeatureCollection", "metadata": {"plans": [], "unplaced": unplaced, "superseded": []}, "features": []}
+    building = aliased(Location)
+    apartments = {
+        (row.building, row.code): str(row.id)
+        for row in (
+            await db.execute(
+                select(Location.id, Location.code, building.code.label("building"))
+                .join(building, building.id == Location.parent_id)
+                .where(Location.kind == "APARTMENT", Location.is_active.is_(True))
+            )
+        ).all()
+    }
+    foyer, _ = await build_foyer_index(db)
+    linked = []
+    for feature in features:
+        props = feature["properties"]
+        if props["kind"] == "room":
+            plan = props["plan"]
+            extra = {"location_id": apartments.get((plan["building"], props["name"]))}
+            room = foyer.get(props["room_id"]) if plan["building"] == "Foyer" else None
+            if room:
+                extra["clubs"] = [{"id": club["club_id"], "name": club["club_name"]} for club in room["clubs"]]
+            feature = {**feature, "properties": {**props, **extra}}
+        linked.append(feature)
+    return {
+        "type": "FeatureCollection",
+        "metadata": {
+            "plans": list(placed.values()),
+            "unplaced": unplaced,
+            "computed_at": max((entry.get("computed_at") or "" for entry in placements.values()), default=None),
+            "superseded": superseded_places(indoor_collection()["features"], features),
+        },
+        "features": linked,
+    }
+
+
+@router.get("/basemap")
+async def basemap():
+    return map_file(maps_dir() / "basemap.geojson", "application/json", "Le fond de carte n’a pas encore été téléchargé.")
+
+
+@router.get("/aerial")
+async def aerial_index():
+    return map_file(maps_dir() / "aerial" / "index.json", "application/json", "Les photographies aériennes n’ont pas encore été téléchargées.")
+
+
+@router.get("/aerial/{z}/{x}/{y}.jpg")
+async def aerial_tile(z: int = Path(ge=0, le=22), x: int = Path(ge=0), y: int = Path(ge=0)):
+    return map_file(maps_dir() / "aerial" / str(z) / str(x) / f"{y}.jpg", "image/jpeg", "Tuile absente.")
+
+
+@router.get("/relief")
+async def relief_index():
+    return map_file(maps_dir() / "relief" / "index.json", "application/json", "Le relief 3D n’a pas encore été construit.")
+
+
+@router.get("/relief/{z}/{x}/{y}.glb")
+async def relief_tile(z: int = Path(ge=0, le=22), x: int = Path(ge=0), y: int = Path(ge=0)):
+    return map_file(maps_dir() / "relief" / str(z) / str(x) / f"{y}.glb", "model/gltf-binary", "Tuile absente.")

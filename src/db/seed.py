@@ -26,6 +26,12 @@ DATA_SOURCES = [
         "description": "Indoor WGS84 floor plans, room geometry and campus points of interest.",
     },
     {
+        "code": "plan_georeference",
+        "kind": "IMPORT",
+        "label": "Placement des plans historiques",
+        "description": "Geographic placement of the legacy floor plans, derived from Wemap by the scripts.",
+    },
+    {
         "code": "trombint",
         "kind": "SCRAPER",
         "label": "TrombINT",
