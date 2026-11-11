@@ -17,7 +17,12 @@ from core.housing import apartment_details
 from core.places import mark_destinations, place_category, room_alias
 from db.database import get_db
 from db.models import Event, Location, Organization, Person, PersonHousing
-from services.plan_geography import plan_placements, projected_plans, superseded_places
+from services.plan_geography import (
+    local_plans,
+    plan_placements,
+    projected_plans,
+    superseded_places,
+)
 
 router = APIRouter(
     prefix="/maps/indoor", tags=["indoor-maps"], dependencies=[Depends(require_user)]
@@ -254,11 +259,12 @@ async def legacy_link(
         floor = floor or (plan and plan["floor"])
     placements = await plan_placements(db)
     target = {"building": None, "level": None, "feature": None}
+    local_floors, local_features = local_plans(placements)
     if room:
         wanted = room_alias(room)
         drawn = [
             feature
-            for feature in projected_plans(placements)[0]
+            for feature in [*projected_plans(placements)[0], *local_features]
             if feature["properties"]["kind"] == "room"
             and (not code or feature["properties"]["plan"]["building"] == code)
             and wanted in {room_alias(feature["properties"]["name"] or ""), room_alias(feature["properties"]["room_id"] or "")}
@@ -275,6 +281,8 @@ async def legacy_link(
         entry = placements.get(f"{code}_{floor}", {}) if floor else {}
         if entry.get("status") == "placed":
             target["level"] = entry.get("level")
+        elif floor and any(item["plan"] == f"{code}_{floor}" for item in local_floors):
+            target["level"] = float(floor)
         target["building"] = entry.get("wemap_building_id") or next(
             (
                 value["wemap_building_id"]
@@ -475,13 +483,40 @@ def map_file(path, media_type, missing):
 @router.get("/plans")
 async def plans(db: AsyncSession = Depends(get_db)):
     """Historical drawings placed on the campus, with their authoritative room numbers."""
-    from api.common import build_foyer_index
-
     placements = await plan_placements(db)
     features, placed = projected_plans(placements)
     unplaced = {name: entry.get("reason") for name, entry in placements.items() if entry.get("status") != "placed"}
     if not features:
         return {"type": "FeatureCollection", "metadata": {"plans": [], "unplaced": unplaced, "superseded": []}, "features": []}
+    return {
+        "type": "FeatureCollection",
+        "metadata": {
+            "plans": list(placed.values()),
+            "unplaced": unplaced,
+            "computed_at": max((entry.get("computed_at") or "" for entry in placements.values()), default=None),
+            "superseded": superseded_places(indoor_collection()["features"], features),
+        },
+        "features": await link_rooms(db, features),
+    }
+
+
+@router.get("/local-plans")
+async def local_plan_view(db: AsyncSession = Depends(get_db)):
+    """Residences without any placed floor, drawn in plan coordinates apart from the map."""
+    from core.laundry import LAUNDRY_URLS
+
+    floors, features = local_plans(await plan_placements(db))
+    buildings = {}
+    for floor in floors:
+        building = buildings.setdefault(floor["building"], {"code": floor["building"], "laundry": floor["building"].lower() in LAUNDRY_URLS, "floors": []})
+        building["floors"].append({key: floor[key] for key in ("plan", "floor", "level", "view_box")})
+    return {"buildings": list(buildings.values()), "features": await link_rooms(db, features)}
+
+
+async def link_rooms(db, features):
+    """Flats link to their APARTMENT location, Foyer rooms to their clubs."""
+    from api.common import build_foyer_index
+
     building = aliased(Location)
     apartments = {
         (row.building, row.code): str(row.id)
@@ -493,7 +528,7 @@ async def plans(db: AsyncSession = Depends(get_db)):
             )
         ).all()
     }
-    foyer, _ = await build_foyer_index(db)
+    foyer, _ = await build_foyer_index(db) if any(feature["properties"]["plan"]["building"] == "Foyer" for feature in features) else ({}, {})
     linked = []
     for feature in features:
         props = feature["properties"]
@@ -508,16 +543,7 @@ async def plans(db: AsyncSession = Depends(get_db)):
                 ] or [{"id": None, "name": room["raw_name"], "logo_url": None}]
             feature = {**feature, "properties": {**props, **extra}}
         linked.append(feature)
-    return {
-        "type": "FeatureCollection",
-        "metadata": {
-            "plans": list(placed.values()),
-            "unplaced": unplaced,
-            "computed_at": max((entry.get("computed_at") or "" for entry in placements.values()), default=None),
-            "superseded": superseded_places(indoor_collection()["features"], features),
-        },
-        "features": linked,
-    }
+    return linked
 
 
 @router.get("/basemap")

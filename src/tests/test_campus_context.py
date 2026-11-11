@@ -245,3 +245,35 @@ async def test_legacy_links_resolve_historical_floors_and_rooms_to_the_campus_ma
     assert (await resolve(building="U9", room="Ancien nom"))["feature"] is None
     assert await resolve(building="U8") == {"building": "U8", "level": None, "feature": None}
     assert (await client.get("/api/private/maps/indoor/legacy")).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_residences_without_placed_floor_are_served_in_plan_coordinates(client, db_session, user_token, campus, tmp_path):
+    await add_plan_floors(db_session)
+    square = {"type": "Polygon", "coordinates": [[[0, 0], [40, 0], [40, 20], [0, 20], [0, 0]]]}
+    (tmp_path / "public" / "plans" / "U8_1.geojson").write_text(json.dumps({
+        "type": "FeatureCollection",
+        "metadata": {"plan_coordinate_space": "local_plan", "building": "U8", "floor": "1", "view_box": [0, 0, 200, 900]},
+        "features": [{"type": "Feature", "id": "plan:U8:1:room:8101", "geometry": None, "properties": {"kind": "room", "building": "U8", "floor": "1", "room_id": "8101", "name": "8101", "plan_geometry": square, "label_coordinates": [20, 10]}}],
+    }))
+    off_campus = Location(kind="BUILDING", code="U8")
+    db_session.add(off_campus)
+    await db_session.flush()
+    flat = Location(kind="APARTMENT", code="8101", parent_id=off_campus.id, attributes=MAISEL)
+    db_session.add_all([flat, Location(kind="FLOOR", code="1", parent_id=off_campus.id, attributes={"plan_georeference": {"status": "unplaced", "reason": "Aucun bâtiment géographique correspondant."}})])
+    await db_session.commit()
+    headers = {"Authorization": f"Bearer {user_token}"}
+
+    assert (await client.get("/api/private/maps/indoor/local-plans")).status_code == 401
+    body = (await client.get("/api/private/maps/indoor/local-plans", headers=headers)).json()
+    # U9 has a placed floor: it stays on the map, its unplaced floor is not shown apart.
+    assert body["buildings"] == [{"code": "U8", "laundry": False, "floors": [{"plan": "U8_1", "floor": "1", "level": 1.0, "view_box": [0, 0, 200, 900]}]}]
+    room = body["features"][0]
+    assert room["id"] == "plan:U8_1:plan:U8:1:room:8101"
+    assert room["geometry"] is None
+    assert room["properties"]["plan_geometry"] == square
+    assert (room["properties"]["building_id"], room["properties"]["levels"], room["properties"]["location_id"]) == ("U8", [1.0], str(flat.id))
+
+    resolved = (await client.get("/api/private/maps/indoor/legacy", params={"room": "8101"}, headers=headers)).json()
+    assert resolved == {"building": "U8", "level": 1.0, "feature": room["id"]}
+    assert (await client.get("/api/private/maps/indoor/legacy", params={"building": "U8", "floor": "1"}, headers=headers)).json() == {"building": "U8", "level": 1.0, "feature": None}

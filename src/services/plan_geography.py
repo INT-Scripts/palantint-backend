@@ -180,6 +180,47 @@ def projected_plans(placements):
     return _projected(json.dumps(placements, sort_keys=True), (str(plans), plans.stat().st_mtime_ns))
 
 
+def local_plans(placements):
+    """Drawings of buildings without any placed floor (U6 is off campus).
+
+    They stay in drawing coordinates, with the same feature identifiers as the
+    placed plans, and are shown apart from the geographic map.
+    """
+    placed = {name.rsplit("_", 1)[0] for name, entry in placements.items() if entry.get("status") == "placed"}
+    floors, features = [], []
+    for name in sorted(placements):
+        building, floor = name.rsplit("_", 1)
+        path = plans_dir() / f"{name}.geojson"
+        if building in placed or not path.is_file():
+            continue
+        plan = json.loads(path.read_text(encoding="utf-8"))
+        level = float(floor)
+        floors.append({"plan": name, "building": building, "floor": floor, "level": level, "view_box": plan["metadata"]["view_box"]})
+        for feature in plan["features"]:
+            props = feature["properties"]
+            if props.get("kind") not in ("room", "wall") or not props.get("plan_geometry"):
+                continue
+            room = props.get("name") or props.get("room_id")
+            features.append({
+                "type": "Feature",
+                "id": f"plan:{name}:{feature['id']}",
+                "geometry": None,
+                "properties": {
+                    "source": "plan",
+                    "local": True,
+                    "kind": props["kind"],
+                    "name": room if props["kind"] == "room" else None,
+                    "room_id": props.get("room_id"),
+                    "building_id": building,
+                    "levels": [level],
+                    "label_coordinates": props.get("label_coordinates"),
+                    "plan_geometry": props["plan_geometry"],
+                    "plan": {"building": building, "floor": floor, "room": room},
+                },
+            })
+    return floors, features
+
+
 def superseded_places(wemap_features, plan_features):
     """Wemap rooms and POIs whose label point lies in a drawn room.
 
