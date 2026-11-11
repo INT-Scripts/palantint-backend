@@ -81,7 +81,7 @@ async def add_plan_floors(db_session):
 
 @pytest.mark.asyncio
 async def test_campus_context_routes_are_private(client, campus):
-    for path in ("plans", "basemap", "aerial", "aerial/17/1/2.jpg", "relief", "relief/18/1/2.glb"):
+    for path in ("plans", "basemap", "aerial", "aerial/17/1/2.jpg", "relief", "relief/18/1/2.bin", "occupancy"):
         assert (await client.get(f"/api/private/maps/indoor/{path}")).status_code == 401
 
 
@@ -111,6 +111,37 @@ async def test_drawn_plans_are_projected_linked_and_supersede_covered_places(cli
 
 
 @pytest.mark.asyncio
+async def test_drawn_plans_are_revalidated_by_etag(client, db_session, user_token, campus):
+    await add_plan_floors(db_session)
+    headers = {"Authorization": f"Bearer {user_token}"}
+    first = await client.get("/api/private/maps/indoor/plans", headers=headers)
+    assert first.headers["cache-control"] == "private, no-cache"
+    again = await client.get("/api/private/maps/indoor/plans", headers={**headers, "If-None-Match": first.headers["etag"]})
+    assert (again.status_code, again.content) == (304, b"")
+    assert (await client.get("/api/private/maps/indoor/plans", headers={**headers, "If-None-Match": '"stale"'})).json() == first.json()
+
+
+@pytest.mark.asyncio
+async def test_occupancy_lists_flats_by_location_without_identities(client, db_session, user_token):
+    building = Location(kind="BUILDING", code="U9")
+    db_session.add(building)
+    await db_session.flush()
+    rented, vacant, moved_out = (Location(kind="APARTMENT", code=code, parent_id=building.id) for code in ("9101", "9102", "9103"))
+    room = Location(kind="ROOM", code="A008")
+    student = Person(kind="STUDENT", first_name="Ada", last_name="L")
+    db_session.add_all([rented, vacant, moved_out, room, student])
+    await db_session.flush()
+    db_session.add_all([
+        PersonHousing(person_id=student.id, location_id=rented.id),
+        PersonHousing(person_id=student.id, location_id=moved_out.id, ended_at=datetime(2025, 1, 1)),
+    ])
+    await db_session.commit()
+
+    response = await client.get("/api/private/maps/indoor/occupancy", headers={"Authorization": f"Bearer {user_token}"})
+    assert response.json() == {"occupied": [str(rented.id)], "vacant": sorted([str(vacant.id), str(moved_out.id)])}
+
+
+@pytest.mark.asyncio
 async def test_plans_are_empty_until_placements_are_ingested(client, user_token, campus):
     response = await client.get("/api/private/maps/indoor/plans", headers={"Authorization": f"Bearer {user_token}"})
     assert response.status_code == 200
@@ -125,17 +156,17 @@ async def test_downloaded_context_is_served_only_from_private_map_assets(client,
     tile = campus / "aerial" / "17" / "1" / "2.jpg"
     tile.parent.mkdir(parents=True)
     tile.write_bytes(b"\xff\xd8jpeg")
-    relief = campus / "relief" / "18" / "1" / "2.glb"
+    relief = campus / "relief" / "18" / "1" / "2.bin"
     relief.parent.mkdir(parents=True)
-    relief.write_bytes(b"glTF")
+    relief.write_bytes(b"PRH1")
 
     basemap = await client.get("/api/private/maps/indoor/basemap", headers=headers)
     assert basemap.status_code == 200
     assert basemap.headers["content-type"].startswith("application/json")
     aerial = await client.get("/api/private/maps/indoor/aerial/17/1/2.jpg", headers=headers)
     assert (aerial.status_code, aerial.headers["content-type"], aerial.content) == (200, "image/jpeg", b"\xff\xd8jpeg")
-    glb = await client.get("/api/private/maps/indoor/relief/18/1/2.glb", headers=headers)
-    assert (glb.status_code, glb.headers["content-type"]) == (200, "model/gltf-binary")
+    cell = await client.get("/api/private/maps/indoor/relief/18/1/2.bin", headers=headers)
+    assert (cell.status_code, cell.headers["content-type"], cell.content) == (200, "application/octet-stream", b"PRH1")
     assert (await client.get("/api/private/maps/indoor/aerial/17/1/3.jpg", headers=headers)).status_code == 404
     assert (await client.get("/api/private/maps/indoor/aerial/17/..%2F1/2.jpg", headers=headers)).status_code in (404, 422)
 

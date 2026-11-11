@@ -1,12 +1,13 @@
 """Private, provider-independent indoor plans in RFC 7946 GeoJSON."""
 
+import hashlib
 import json
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
 from functools import lru_cache
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -36,6 +37,16 @@ def _read_collection(path, modified_ns, size):
     if data.get("type") != "FeatureCollection":
         raise ValueError("Invalid indoor GeoJSON")
     return data
+
+
+def revalidated(request, payload):
+    """Large reference JSON: the browser keeps it and revalidates it, receiving 304 while it is unchanged."""
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+    etag = f'"{hashlib.blake2b(body, digest_size=16).hexdigest()}"'
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
+    if etag in request.headers.get("if-none-match", ""):
+        return Response(status_code=304, headers=headers)
+    return Response(body, media_type="application/json", headers=headers)
 
 
 def indoor_collection():
@@ -105,6 +116,7 @@ async def manifest():
 
 @router.get("/geojson")
 async def geojson(
+    request: Request,
     building: str | None = None,
     level: float | None = None,
     compact: bool = False,
@@ -192,7 +204,7 @@ async def geojson(
                 },
             }
         )
-    return {**collection, "features": mark_destinations(features)}
+    return revalidated(request, {**collection, "features": mark_destinations(features)})
 
 
 @router.get("/lookup")
@@ -500,6 +512,28 @@ async def housing_summary(db: AsyncSession = Depends(get_db)):
     }
 
 
+@router.get("/occupancy")
+async def occupancy(db: AsyncSession = Depends(get_db)):
+    """Occupied and vacant flats, by location, for the map colouring; no identities."""
+    apartments = (
+        await db.execute(select(Location.id).where(Location.kind == "APARTMENT", Location.is_active.is_(True)))
+    ).scalars().all()
+    occupied = set(
+        (
+            await db.execute(
+                select(PersonHousing.location_id).where(
+                    PersonHousing.ended_at.is_(None),
+                    PersonHousing.location_id.in_(apartments),
+                )
+            )
+        ).scalars().all()
+    )
+    return {
+        "occupied": sorted(str(identity) for identity in occupied),
+        "vacant": sorted(str(identity) for identity in apartments if identity not in occupied),
+    }
+
+
 def maps_dir():
     return settings.PRIVATE_ASSETS_DIR / "maps"
 
@@ -512,14 +546,14 @@ def map_file(path, media_type, missing):
 
 
 @router.get("/plans")
-async def plans(db: AsyncSession = Depends(get_db)):
+async def plans(request: Request, db: AsyncSession = Depends(get_db)):
     """Historical drawings placed on the campus, with their authoritative room numbers."""
     placements = await plan_placements(db)
     features, placed = projected_plans(placements)
     unplaced = {name: entry.get("reason") for name, entry in placements.items() if entry.get("status") != "placed"}
     if not features:
         return {"type": "FeatureCollection", "metadata": {"plans": [], "unplaced": unplaced, "superseded": []}, "features": []}
-    return {
+    return revalidated(request, {
         "type": "FeatureCollection",
         "metadata": {
             "plans": list(placed.values()),
@@ -528,7 +562,7 @@ async def plans(db: AsyncSession = Depends(get_db)):
             "superseded": superseded_places(indoor_collection()["features"], features),
         },
         "features": await link_rooms(db, features),
-    }
+    })
 
 
 @router.get("/local-plans")
@@ -597,6 +631,7 @@ async def relief_index():
     return map_file(maps_dir() / "relief" / "index.json", "application/json", "Le relief 3D n’a pas encore été construit.")
 
 
-@router.get("/relief/{z}/{x}/{y}.glb")
+@router.get("/relief/{z}/{x}/{y}.bin")
 async def relief_tile(z: int = Path(ge=0, le=22), x: int = Path(ge=0), y: int = Path(ge=0)):
-    return map_file(maps_dir() / "relief" / str(z) / str(x) / f"{y}.glb", "model/gltf-binary", "Tuile absente.")
+    # Height grid and texture of one cell (scripts: ``write_relief_tile``).
+    return map_file(maps_dir() / "relief" / str(z) / str(x) / f"{y}.bin", "application/octet-stream", "Tuile absente.")
