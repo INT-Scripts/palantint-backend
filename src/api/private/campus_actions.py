@@ -7,7 +7,7 @@ places flats by `location_id`. Event times are Paris wall-clock, as in ADE.
 
 import uuid
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -315,4 +315,42 @@ async def presence(location_id: uuid.UUID, at: datetime | None = None, db: Async
         "groups": [{"id": str(group.id), "name": group.name} for group in groups],
         "people": len(people),
         "homes": await homes_of(db, people),
+    }
+
+
+@router.get("/locations/{location_id}/groups")
+async def week_groups(location_id: uuid.UUID, day: date | None = None, db: AsyncSession = Depends(get_db)):
+    """Class groups using the room during the week of ``day`` (default: this week), with their number of sessions."""
+    _, location_ids = await place_identities(db, location_id)
+    monday = datetime.combine((day or paris_now().date()), datetime.min.time())
+    monday -= timedelta(days=monday.weekday())
+    events = (
+        (
+            await db.execute(
+                select(Event)
+                .options(selectinload(Event.organization))
+                .where(
+                    Event.location_id.in_(location_ids),
+                    Event.is_active.is_(True),
+                    Event.start_time >= monday,
+                    Event.start_time < monday + timedelta(days=7),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    sessions = defaultdict(int)
+    names = {}
+    for event in events:
+        for group in await get_event_class_groups(db, event):
+            sessions[group.id] += 1
+            names[group.id] = group.name
+    return {
+        "week": monday.date().isoformat(),
+        "events": len(events),
+        "groups": sorted(
+            ({"id": str(group), "name": names[group], "sessions": count} for group, count in sessions.items()),
+            key=lambda item: (-item["sessions"], item["name"]),
+        ),
     }

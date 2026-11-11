@@ -187,3 +187,23 @@ async def test_presence_uses_attendees_or_else_the_class_groups(client, db_sessi
     assert (after["event"]["name"], after["ongoing"], after["homes"][0]["people"][0]["first_name"]) == ("Séminaire", False, "Bob")
     before = (await client.get(url, params={"at": "2026-11-11T08:00:00"}, headers=auth)).json()
     assert before["event"] is None
+
+
+@pytest.mark.asyncio
+async def test_week_groups_count_sessions_of_the_week_only(client, db_session, auth):
+    room = Location(kind="ROOM", code="A008")
+    g1, g2 = Organization(kind="CLASS_GROUP", name="G1"), Organization(kind="CLASS_GROUP", name="G2")
+    db_session.add_all([room, g1, g2])
+    await db_session.flush()
+    # Wednesday 11 November 2026: the week runs from Monday 9 to Sunday 15.
+    db_session.add_all([
+        Event(name="A", start_time=datetime(2026, 11, 9, 8, 0), end_time=datetime(2026, 11, 9, 9, 0), location_id=room.id, organization_id=g1.id),
+        Event(name="B", start_time=datetime(2026, 11, 13, 8, 0), end_time=datetime(2026, 11, 13, 9, 0), location_id=room.id, organization_id=g1.id),
+        Event(name="C", start_time=datetime(2026, 11, 15, 8, 0), end_time=datetime(2026, 11, 15, 9, 0), location_id=room.id, organization_id=g2.id),
+        Event(name="Next week", start_time=datetime(2026, 11, 16, 8, 0), end_time=datetime(2026, 11, 16, 9, 0), location_id=room.id, organization_id=g2.id),
+    ])
+    await db_session.commit()
+
+    body = (await client.get(f"/api/private/maps/indoor/locations/{room.id}/groups", params={"day": "2026-11-11"}, headers=auth)).json()
+    assert body["week"] == "2026-11-09" and body["events"] == 3
+    assert [(group["name"], group["sessions"]) for group in body["groups"]] == [("G1", 2), ("G2", 1)]
