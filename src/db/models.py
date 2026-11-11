@@ -402,6 +402,22 @@ class RecentlyViewed(SQLModel, table=True):
     person: "Person" = Relationship()
 
 
+class PlaceBookmark(SQLModel, table=True):
+    """A place of the campus map bookmarked by a user. `feature_id` is the map's
+    identifier (the `feature` URL parameter); name, building and level are kept
+    so the list stays readable if the place is renamed or no longer drawn."""
+    __tablename__ = "place_bookmarks"
+    __table_args__ = (UniqueConstraint("user_id", "feature_id", name="uq_place_bookmark"),)
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    user_id: uuid.UUID = Field(sa_column=Column(PG_UUID, ForeignKey("users.id", ondelete="CASCADE"), index=True))
+    feature_id: str
+    name: str
+    building_id: Optional[str] = Field(default=None)
+    level: Optional[float] = Field(default=None)
+    location_id: Optional[uuid.UUID] = Field(default=None)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class LaundrySubscription(SQLModel, table=True):
     __tablename__ = "laundry_subscriptions"
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
