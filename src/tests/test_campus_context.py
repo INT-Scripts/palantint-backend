@@ -1,10 +1,11 @@
 import json
 import math
+from datetime import datetime
 
 import pytest
 
 from api.private import indoor
-from db.models import Location, Organization, Person, PersonHousing
+from db.models import Event, Location, Organization, Person, PersonHousing
 from services import plan_geography
 
 ORIGIN = [2.44, 48.62]
@@ -277,3 +278,26 @@ async def test_residences_without_placed_floor_are_served_in_plan_coordinates(cl
     resolved = (await client.get("/api/private/maps/indoor/legacy", params={"room": "8101"}, headers=headers)).json()
     assert resolved == {"building": "U8", "level": 1.0, "feature": room["id"]}
     assert (await client.get("/api/private/maps/indoor/legacy", params={"building": "U8", "floor": "1"}, headers=headers)).json() == {"building": "U8", "level": 1.0, "feature": None}
+
+
+@pytest.mark.asyncio
+async def test_place_agenda_returns_one_day_including_events_crossing_midnight(client, db_session, user_token):
+    room = Location(kind="ROOM", code="A008", name="A008 36pl")
+    other = Location(kind="ROOM", code="B101")
+    db_session.add_all([room, other])
+    await db_session.flush()
+    db_session.add_all([
+        Event(name="Cours du matin", location_id=room.id, start_time=datetime(2026, 11, 12, 8, 0), end_time=datetime(2026, 11, 12, 9, 30)),
+        Event(name="Soirée", location_id=room.id, start_time=datetime(2026, 11, 11, 22, 0), end_time=datetime(2026, 11, 12, 1, 0)),
+        Event(name="Le lendemain", location_id=room.id, start_time=datetime(2026, 11, 13, 8, 0), end_time=datetime(2026, 11, 13, 9, 0)),
+        Event(name="Annulé", location_id=room.id, start_time=datetime(2026, 11, 12, 10, 0), end_time=datetime(2026, 11, 12, 11, 0), is_active=False),
+        Event(name="Autre salle", location_id=other.id, start_time=datetime(2026, 11, 12, 8, 0), end_time=datetime(2026, 11, 12, 9, 0)),
+    ])
+    await db_session.commit()
+    url = f"/api/private/maps/indoor/locations/{room.id}/events"
+    assert (await client.get(url, params={"day": "2026-11-12"})).status_code == 401
+    body = (await client.get(url, params={"day": "2026-11-12"}, headers={"Authorization": f"Bearer {user_token}"})).json()
+    assert body["day"] == "2026-11-12"
+    assert [event["name"] for event in body["events"]] == ["Soirée", "Cours du matin"]
+    assert body["events"][1]["start_time"] == "2026-11-12T08:00:00"
+    assert (await client.get(url, params={"day": "pas une date"}, headers={"Authorization": f"Bearer {user_token}"})).status_code == 422

@@ -2,7 +2,7 @@
 
 import json
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from functools import lru_cache
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
@@ -312,8 +312,8 @@ async def legacy_link(
     return target
 
 
-@router.get("/locations/{location_id}")
-async def location_context(location_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def place_identities(db, location_id):
+    """The location and, for a room, the other records of the same canonical room."""
     location = await db.get(Location, location_id)
     if not location or not location.is_active:
         raise HTTPException(status_code=404, detail="Lieu introuvable")
@@ -326,6 +326,45 @@ async def location_context(location_id: uuid.UUID, db: AsyncSession = Depends(ge
         location_ids = [
             identity for identity, target in index[1].items() if target == canonical
         ] or location_ids
+    return location, location_ids
+
+
+def serialize_event(event):
+    return {
+        "id": str(event.id),
+        "name": event.name,
+        "start_time": event.start_time.isoformat(),
+        "end_time": event.end_time.isoformat(),
+    }
+
+
+@router.get("/locations/{location_id}/events")
+async def location_day(location_id: uuid.UUID, day: date = Query(...), db: AsyncSession = Depends(get_db)):
+    """One day of the place's agenda (event times are Paris wall-clock, as in ADE)."""
+    _, location_ids = await place_identities(db, location_id)
+    start = datetime.combine(day, time.min)
+    events = (
+        (
+            await db.execute(
+                select(Event)
+                .where(
+                    Event.location_id.in_(location_ids),
+                    Event.is_active.is_(True),
+                    Event.end_time > start,
+                    Event.start_time < start + timedelta(days=1),
+                )
+                .order_by(Event.start_time)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {"day": day.isoformat(), "events": [serialize_event(event) for event in events]}
+
+
+@router.get("/locations/{location_id}")
+async def location_context(location_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    location, location_ids = await place_identities(db, location_id)
     occupants = (
         (
             await db.execute(
@@ -392,15 +431,7 @@ async def location_context(location_id: uuid.UUID, db: AsyncSession = Depends(ge
             for person in occupants
         ],
         "clubs": [{"id": str(club.id), "name": club.name} for club in clubs],
-        "events": [
-            {
-                "id": str(event.id),
-                "name": event.name,
-                "start_time": event.start_time.isoformat(),
-                "end_time": event.end_time.isoformat(),
-            }
-            for event in events
-        ],
+        "events": [serialize_event(event) for event in events],
         # The agenda API exposes room_label (name, falling back to code). Use
         # the same value so a code like A008 can select the label A008 36pl.
         "agenda_room": (location.name or location.code) if has_agenda else None,
