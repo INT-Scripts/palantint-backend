@@ -64,13 +64,21 @@ async def registration(db: AsyncSession = Depends(get_db)):
     from api.private.maps import get_3d_config
     from services.map_registration import registration_from_markers
 
+    from services.scan_ground import scan_ground
+
     config = await get_3d_config(db=db, current_user=None)
-    return {
-        "registration": registration_from_markers(
-            indoor_collection()["features"],
-            [marker.model_dump() for marker in config.markers],
-        )
-    }
+    fitted = registration_from_markers(
+        indoor_collection()["features"],
+        [marker.model_dump() for marker in config.markers],
+    )
+    # Markers place the scan horizontally; its height comes from its own ground, so
+    # that the scan's ground meets the map's (floors, relief) at 0.
+    ground = scan_ground(settings.ASSETS_DIR / "3d") if fitted else None
+    if ground is not None:
+        fitted = {**fitted, "altitude": ground, "altitude_source": "scan_ground"}
+    elif fitted:
+        fitted = {**fitted, "altitude_source": "markers"}
+    return {"registration": fitted}
 
 
 @router.get("/manifest")
