@@ -14,6 +14,7 @@ from api.private.class_groups import router as class_groups_router
 from api.private.clubs import router as clubs_router
 
 # Private router and dependencies
+from api.private.campus_actions import router as campus_actions_router
 from api.private.deps import require_user, require_user_query_token
 from api.private.graph import router as graph_router
 from api.private.indoor import router as indoor_router
@@ -115,6 +116,7 @@ private_router.include_router(media_router)
 private_router.include_router(search_router)
 private_router.include_router(maps_router)
 private_router.include_router(indoor_router)
+private_router.include_router(campus_actions_router)
 private_router.include_router(laundry_router)
 private_router.include_router(graph_router)
 private_router.include_router(class_groups_router)
