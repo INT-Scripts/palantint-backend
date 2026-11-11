@@ -22,6 +22,7 @@ from sqlalchemy import select
 
 from core.config import settings as app_settings
 from db.models import (
+    Location,
     Notification,
     PrintGrant,
     PrintRequest,
@@ -327,7 +328,17 @@ async def printers(db, user: User, request_id: uuid.UUID) -> list[dict]:
         if not job:
             raise PrintShareError("Le document n'est plus dans la file d'attente followme.", 410)
         found = await client.get_physical_printers(job)
-    return [{"name": p["name"], "status": p["status"], "available": "OK" in p["status"]} for p in found]
+    places = await printer_places(db)
+    return [{"name": p["name"], "status": p["status"], "available": "OK" in p["status"],
+             "feature_id": places[p["name"]].attributes["wemap"].get("primary_feature_id") if p["name"] in places else None,
+             "place": places[p["name"]].name if p["name"] in places else None} for p in found]
+
+
+async def printer_places(db) -> dict[str, Location]:
+    """Mapped place of each followme printer, from the seeded print points."""
+    locations = (await db.execute(select(Location).where(Location.is_active.is_(True)))).scalars()
+    return {name: location for location in locations
+            for name in (location.attributes or {}).get("printing", {}).get("printers", [])}
 
 
 async def release(db, user: User, request_id: uuid.UUID, printer_name: str) -> PrintRequest:

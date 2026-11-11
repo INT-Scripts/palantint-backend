@@ -497,6 +497,8 @@ async def location_context(location_id: uuid.UUID, db: AsyncSession = Depends(ge
         # The agenda API exposes room_label (name, falling back to code). Use
         # the same value so a code like A008 can select the label A008 36pl.
         "agenda_room": (location.name or location.code) if has_agenda else None,
+        # followme printers standing here, from the seeded print points.
+        "printers": (location.attributes or {}).get("printing", {}).get("printers", []),
         "apartment": apartment_details(location.attributes)
         if location.kind == "APARTMENT"
         else None,

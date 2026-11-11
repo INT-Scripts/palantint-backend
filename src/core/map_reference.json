@@ -337,5 +337,18 @@
       "lower": "-0.5",
       "upper": "0.5"
     }
+  ],
+  "print_points": [
+    {
+      "feature_id": "pinpoint:81108545",
+      "reason": "Copieurs étudiants de NOVA – Bâtiment I, niveau 1 : les quatre imprimantes followme MFP-I1-* (confirmé par l’utilisateur, 2026-11-11).",
+      "level": 1,
+      "printers": [
+        "underwood\\MFP-I1-1",
+        "underwood\\MFP-I1-2",
+        "underwood\\MFP-I1-3",
+        "underwood\\MFP-I1-4"
+      ]
+    }
   ]
 }

@@ -365,3 +365,26 @@ async def test_concurrent_requests_do_not_over_reserve(test_engine, client, peop
 
     results = await asyncio.gather(attempt(), attempt())
     assert sorted(results) == ["ok", "refused"]
+
+
+@pytest.mark.asyncio
+async def test_print_points_place_followme_printers_on_the_map(client, db_session, user_token):
+    from core.map_reference import reference_data
+    from db.models import Location
+    from db.seed import seed_map_catalog
+    from services.printing.jobs import printer_places
+
+    point = reference_data()["print_points"][0]
+    place = Location(kind="COMMON_AREA", code="Copieurs étudiants", name="Copieurs étudiants",
+                     attributes={"wemap": {"feature_ids": [point["feature_id"]], "levels": []}})
+    db_session.add(place)
+    await seed_map_catalog(db_session)
+    await db_session.commit()
+
+    assert place.attributes["wemap"]["feature_ids"] == [point["feature_id"]]
+    assert place.attributes["printing"]["printers"] == point["printers"]
+    places = await printer_places(db_session)
+    assert {name: location.id for name, location in places.items()} == {name: place.id for name in point["printers"]}
+    response = await client.get(f"/api/private/maps/indoor/locations/{place.id}",
+                                headers={"Authorization": f"Bearer {user_token}"})
+    assert response.json()["printers"] == point["printers"]

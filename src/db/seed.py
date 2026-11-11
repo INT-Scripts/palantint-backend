@@ -173,6 +173,27 @@ async def seed_map_catalog(db_session):
                 {"label": definition["label"], "assets": definition["assets"]},
             )
             floor.attributes = attributes
+    # Print points: the followme printers standing at a mapped Wemap place. The
+    # reference is authoritative, so a changed list replaces the stored one.
+    print_points = reference_data().get("print_points", [])
+    if print_points:
+        places = {
+            feature_id: location
+            for location in (await db_session.execute(select(Location))).scalars()
+            for feature_id in (location.attributes or {})
+            .get("wemap", {})
+            .get("feature_ids", [])
+        }
+        for point in print_points:
+            location = places.get(point["feature_id"])
+            if location is None:
+                continue
+            attributes = dict(location.attributes or {})
+            attributes["printing"] = {
+                "printers": point["printers"],
+                "level": point["level"],
+            }
+            location.attributes = attributes
     await db_session.flush()
 
 

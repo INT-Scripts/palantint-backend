@@ -105,6 +105,9 @@ class PrinterOut(BaseModel):
     name: str
     status: str
     available: bool
+    # Mapped place of the printer on /palantint/campus, when a print point names it.
+    feature_id: Optional[str] = None
+    place: Optional[str] = None
 
 
 class ReleaseIn(BaseModel):
