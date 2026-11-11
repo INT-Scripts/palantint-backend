@@ -251,3 +251,40 @@ async def test_geojson_uses_persisted_curation_and_aliases_without_identity_spec
     assert "name" not in indoor.indoor_collection()["features"][1]["properties"]
     match = (await client.get("/api/private/maps/indoor/lookup?q=Ancien%20libellé", headers=headers)).json()
     assert match[0]["feature_id"] == "room:1"
+
+
+def mapped_room(code, feature, parent=None, name=None):
+    return Location(kind="ROOM", code=code, name=name or code, parent_id=parent, attributes={"wemap": {
+        "active": True, "feature_ids": [feature], "primary_feature_id": feature, "levels": [0],
+        "properties": {"name": name or code, "building_id": 1}}})
+
+
+@pytest.mark.asyncio
+async def test_lookup_settles_duplicate_records_and_reads_room_codes(client, db_session, user_token):
+    floor = Location(kind="FLOOR", code="F0", name="Niveau 0")
+    db_session.add(floor)
+    await db_session.flush()
+    db_session.add_all([
+        # A tiered amphitheatre drawn on two levels: the agenda's own record wins.
+        mapped_room("AMPHI 010 202pl", "amphi:0", floor.id),
+        mapped_room("AMPHI 010", "amphi:-1", floor.id, name="AMPHI 010 202pl"),
+        # An outline on a floor and a loose point with the same label: the floor wins.
+        mapped_room("AMPHI 011 125pl", "amphi11:outline", floor.id),
+        mapped_room("AMPHI 011 125pl", "amphi11:point"),
+        mapped_room("B313 Labo INF", "b313", floor.id),
+        mapped_room("C405", "c405", floor.id),
+        mapped_room("C405 bis", "c405bis", floor.id, name="Salle C405"),
+    ])
+    await db_session.commit()
+    headers = {"Authorization": f"Bearer {user_token}"}
+
+    async def features(q):
+        response = await client.get("/api/private/maps/indoor/lookup", params={"q": q}, headers=headers)
+        return sorted(match["feature_id"] for match in response.json())
+
+    assert await features("AMPHI 010 202pl") == ["amphi:0"]
+    assert await features("AMPHI 011 125pl") == ["amphi11:outline"]
+    assert await features("Salle B313") == ["b313"]
+    # Two distinct rooms sharing a code stay ambiguous.
+    assert await features("Amphi C405") == ["c405", "c405bis"]
+    assert await features("De A à J : salle B313\nDe K à Z : salle C405") == []

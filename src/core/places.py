@@ -22,6 +22,16 @@ def room_alias(value):
     ).strip()
 
 
+# A room code as the timetable writes it: an optional wing digit, a building
+# letter and three digits (B313, 3A401). In a range ("A001-002") only the first
+# room carries a full code.
+ROOM_CODE = re.compile(r"(?<![a-z0-9])\d?[a-z]\d{3}(?![a-z0-9])")
+
+
+def room_codes(value):
+    return set(ROOM_CODE.findall(normalized_name(value)))
+
+
 def place_category(properties):
     if properties.get("category") in {"housing", "teaching", "services"}:
         return properties["category"]

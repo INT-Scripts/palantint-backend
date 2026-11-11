@@ -15,7 +15,13 @@ from sqlalchemy.orm import aliased
 from api.private.deps import require_user
 from core.config import settings
 from core.housing import apartment_details
-from core.places import mark_destinations, place_category, room_alias
+from core.places import (
+    mark_destinations,
+    normalized_name,
+    place_category,
+    room_alias,
+    room_codes,
+)
 from db.database import get_db
 from db.models import Event, Location, Organization, Person, PersonHousing
 from services.plan_geography import (
@@ -219,41 +225,67 @@ async def geojson(
 async def lookup(
     q: str = Query(min_length=1, max_length=200), db: AsyncSession = Depends(get_db)
 ):
-    """Resolve canonical room codes for links from the timetable and profiles."""
+    """Resolve canonical room codes for links from the timetable and profiles.
+
+    Several records may stand for one place: they are counted once per map
+    feature. Between distinct features, the record carrying the exact label
+    and then a record attached to a floor win; anything left is ambiguous and
+    returned as such. A label matching no name falls back to its room code
+    ("Salle B313" → "B313 Labo INF") when it holds exactly one.
+    """
     normalized = room_alias(q)
     rows = (
         (await db.execute(select(Location).where(Location.is_active.is_(True))))
         .scalars()
         .all()
     )
-    matches = []
+    mapped = []
     for location in rows:
         geography = (location.attributes or {}).get("wemap", {})
-        if normalized in {
-            room_alias(value)
-            for value in [
+        if geography.get("feature_ids") and geography.get("active", True):
+            labels = [
                 location.code,
                 location.name or "",
                 geography.get("properties", {}).get("name", ""),
                 *geography.get("aliases", []),
             ]
-        }:
-            if geography.get("feature_ids") and geography.get("active", True):
-                matches.append(
-                    {
-                        "id": str(location.id),
-                        "code": location.code,
-                        "name": location.name,
-                        "feature_id": geography.get(
-                            "primary_feature_id", geography["feature_ids"][0]
-                        ),
-                        "levels": geography.get("levels", []),
-                        "building_id": geography.get("properties", {}).get(
-                            "building_id"
-                        ),
-                    }
-                )
-    return matches
+            mapped.append((location, geography, labels))
+    candidates = [
+        entry for entry in mapped if normalized in {room_alias(value) for value in entry[2]}
+    ]
+    codes = room_codes(q)
+    if not candidates and len(codes) == 1 and "\n" not in q and len(q.split()) <= 6:
+        candidates = [
+            entry
+            for entry in mapped
+            if codes & set().union(*(room_codes(value) for value in entry[2]))
+        ]
+    by_feature = {}
+    for location, geography, labels in candidates:
+        feature_id = geography.get("primary_feature_id", geography["feature_ids"][0])
+        by_feature.setdefault(feature_id, (location, geography))
+    for prefer in (
+        lambda location: normalized_name(location.code) == normalized_name(q),
+        lambda location: location.parent_id is not None,
+    ):
+        preferred = {
+            feature_id: entry
+            for feature_id, entry in by_feature.items()
+            if prefer(entry[0])
+        }
+        if len(by_feature) > 1 and preferred:
+            by_feature = preferred
+    return [
+        {
+            "id": str(location.id),
+            "code": location.code,
+            "name": location.name,
+            "feature_id": feature_id,
+            "levels": geography.get("levels", []),
+            "building_id": geography.get("properties", {}).get("building_id"),
+        }
+        for feature_id, (location, geography) in by_feature.items()
+    ]
 
 
 @router.get("/legacy")
