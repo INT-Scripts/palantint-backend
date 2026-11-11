@@ -274,6 +274,9 @@ async def test_lookup_settles_duplicate_records_and_reads_room_codes(client, db_
         mapped_room("B313 Labo INF", "b313", floor.id),
         mapped_room("C405", "c405", floor.id),
         mapped_room("C405 bis", "c405bis", floor.id, name="Salle C405"),
+        mapped_room("A004 36pl", "a004", floor.id),
+        mapped_room("A001 36pl", "a001", floor.id),
+        mapped_room("A002 36pl", "a002", floor.id),
     ])
     await db_session.commit()
     headers = {"Authorization": f"Bearer {user_token}"}
@@ -285,6 +288,10 @@ async def test_lookup_settles_duplicate_records_and_reads_room_codes(client, db_
     assert await features("AMPHI 010 202pl") == ["amphi:0"]
     assert await features("AMPHI 011 125pl") == ["amphi11:outline"]
     assert await features("Salle B313") == ["b313"]
+    assert await features("Amphi 11") == ["amphi11:outline"]
+    # Joined rooms resolve to their first mapped room.
+    assert await features("A003-004 36pl") == ["a004"]
+    assert await features("A001-002 36pl") == ["a001"]
     # Two distinct rooms sharing a code stay ambiguous.
     assert await features("Amphi C405") == ["c405", "c405bis"]
     assert await features("De A à J : salle B313\nDe K à Z : salle C405") == []

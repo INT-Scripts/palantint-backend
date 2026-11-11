@@ -21,6 +21,7 @@ from core.places import (
     place_category,
     room_alias,
     room_codes,
+    unpadded,
 )
 from db.database import get_db
 from db.models import Event, Location, Organization, Person, PersonHousing
@@ -230,8 +231,10 @@ async def lookup(
     Several records may stand for one place: they are counted once per map
     feature. Between distinct features, the record carrying the exact label
     and then a record attached to a floor win; anything left is ambiguous and
-    returned as such. A label matching no name falls back to its room code
-    ("Salle B313" → "B313 Labo INF") when it holds exactly one.
+    returned as such. A label matching no name is compared without padding
+    zeros ("Amphi 10"), then falls back to its room code ("Salle B313" →
+    "B313 Labo INF") when it names one room or one range, whose first mapped
+    room stands for the joined rooms.
     """
     normalized = room_alias(q)
     rows = (
@@ -253,13 +256,20 @@ async def lookup(
     candidates = [
         entry for entry in mapped if normalized in {room_alias(value) for value in entry[2]}
     ]
+    if not candidates:
+        candidates = [
+            entry for entry in mapped if unpadded(q) in {unpadded(value) for value in entry[2]}
+        ]
     codes = room_codes(q)
     if not candidates and len(codes) == 1 and "\n" not in q and len(q.split()) <= 6:
-        candidates = [
-            entry
-            for entry in mapped
-            if codes & set().union(*(room_codes(value) for value in entry[2]))
-        ]
+        for code in codes[0]:
+            candidates = [
+                entry
+                for entry in mapped
+                if any(code in group for value in entry[2] for group in room_codes(value))
+            ]
+            if candidates:
+                break
     by_feature = {}
     for location, geography, labels in candidates:
         feature_id = geography.get("primary_feature_id", geography["feature_ids"][0])

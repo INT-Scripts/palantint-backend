@@ -23,13 +23,21 @@ def room_alias(value):
 
 
 # A room code as the timetable writes it: an optional wing digit, a building
-# letter and three digits (B313, 3A401). In a range ("A001-002") only the first
-# room carries a full code.
-ROOM_CODE = re.compile(r"(?<![a-z0-9])\d?[a-z]\d{3}(?![a-z0-9])")
+# letter and three digits (B313, 3A401), or a range of joined rooms ("A001-002").
+ROOM_CODE = re.compile(r"(?<![a-z0-9])(\d?[a-z])(\d{3})(?:-(\d{3}))?(?![a-z0-9])")
 
 
 def room_codes(value):
-    return set(ROOM_CODE.findall(normalized_name(value)))
+    """Room codes named by a label, one tuple per code or range, in order."""
+    return [
+        (prefix + first, *([prefix + last] if last else []))
+        for prefix, first, last in ROOM_CODE.findall(normalized_name(value))
+    ]
+
+
+def unpadded(value):
+    """Room alias without leading zeros in standalone numbers ("amphi 010" → "amphi 10")."""
+    return re.sub(r"\b0+(\d)", r"\1", room_alias(value))
 
 
 def place_category(properties):
