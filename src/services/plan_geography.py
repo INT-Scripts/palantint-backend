@@ -14,6 +14,9 @@ from functools import lru_cache
 
 from core.config import settings
 
+# Drawn features shown on the campus map: the storey slab, its corridors, stairs,
+# elevators and unnumbered rooms (``plan-spaces.json``), then numbered rooms and walls.
+PLAN_KINDS = ("floor", "corridor", "stairs", "elevator", "space", "room", "wall")
 
 def plans_dir():
     return settings.ASSETS_DIR / "plans"
@@ -142,7 +145,7 @@ def _projected(placements_key, plans_key):
         }
         for feature in plan["features"]:
             props = feature["properties"]
-            if props.get("kind") not in ("room", "wall"):
+            if props.get("kind") not in PLAN_KINDS:
                 continue
             geometry = feature.get("geometry")
             if convert:
@@ -160,7 +163,7 @@ def _projected(placements_key, plans_key):
                     "properties": {
                         "source": "plan",
                         "kind": props["kind"],
-                        "name": room if props["kind"] == "room" else None,
+                        "name": room if props["kind"] == "room" else props.get("name"),
                         "room_id": props.get("room_id"),
                         "building_id": building_id,
                         "levels": [level] if level is not None else [],
@@ -198,7 +201,7 @@ def local_plans(placements):
         floors.append({"plan": name, "building": building, "floor": floor, "level": level, "view_box": plan["metadata"]["view_box"]})
         for feature in plan["features"]:
             props = feature["properties"]
-            if props.get("kind") not in ("room", "wall") or not props.get("plan_geometry"):
+            if props.get("kind") not in PLAN_KINDS or not props.get("plan_geometry"):
                 continue
             room = props.get("name") or props.get("room_id")
             features.append({
@@ -209,7 +212,7 @@ def local_plans(placements):
                     "source": "plan",
                     "local": True,
                     "kind": props["kind"],
-                    "name": room if props["kind"] == "room" else None,
+                    "name": room if props["kind"] == "room" else props.get("name"),
                     "room_id": props.get("room_id"),
                     "building_id": building,
                     "levels": [level],

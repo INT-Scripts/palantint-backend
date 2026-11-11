@@ -286,7 +286,10 @@ async def test_residences_without_placed_floor_are_served_in_plan_coordinates(cl
     (tmp_path / "public" / "plans" / "U8_1.geojson").write_text(json.dumps({
         "type": "FeatureCollection",
         "metadata": {"plan_coordinate_space": "local_plan", "building": "U8", "floor": "1", "view_box": [0, 0, 200, 900]},
-        "features": [{"type": "Feature", "id": "plan:U8:1:room:8101", "geometry": None, "properties": {"kind": "room", "building": "U8", "floor": "1", "room_id": "8101", "name": "8101", "plan_geometry": square, "label_coordinates": [20, 10]}}],
+        "features": [
+            {"type": "Feature", "id": "plan:U8:1:room:8101", "geometry": None, "properties": {"kind": "room", "building": "U8", "floor": "1", "room_id": "8101", "name": "8101", "plan_geometry": square, "label_coordinates": [20, 10]}},
+            {"type": "Feature", "id": "plan:U8:1:space:hall", "geometry": None, "properties": {"kind": "corridor", "building": "U8", "floor": "1", "space_id": "hall", "name": "Couloir", "plan_geometry": square, "label_coordinates": [20, 30]}},
+        ],
     }))
     off_campus = Location(kind="BUILDING", code="U8")
     db_session.add(off_campus)
@@ -305,6 +308,8 @@ async def test_residences_without_placed_floor_are_served_in_plan_coordinates(cl
     assert room["geometry"] is None
     assert room["properties"]["plan_geometry"] == square
     assert (room["properties"]["building_id"], room["properties"]["levels"], room["properties"]["location_id"]) == ("U8", [1.0], str(flat.id))
+    corridor = body["features"][1]["properties"]
+    assert (corridor["kind"], corridor["name"], corridor.get("location_id")) == ("corridor", "Couloir", None)
 
     resolved = (await client.get("/api/private/maps/indoor/legacy", params={"room": "8101"}, headers=headers)).json()
     assert resolved == {"building": "U8", "level": 1.0, "feature": room["id"]}
